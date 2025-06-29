@@ -12,6 +12,10 @@
 
 #include "raft_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
     RAFT_ERR_NOT_LEADER=-2,
     RAFT_ERR_ONE_VOTING_CHANGE_ONLY=-3,
@@ -953,5 +957,9 @@ void raft_node_set_addition_committed(raft_node_t* me_, int committed);
  * @param[in] raft The Raft server
  * @return 1 if a voting change is in progress */
 int raft_voting_change_is_in_progress(raft_server_t* me_);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RAFT_H_ */

@@ -1,6 +1,10 @@
 #ifndef UV_MULTIPLEX_H
 #define UV_MULTIPLEX_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef fatal
 #define fatal(e) { \
         assert(0 != e); \
@@ -108,5 +112,9 @@ int uv_multiplex_worker_create(uv_multiplex_t* m,
  * @return 0 on success, -1 otherwise
  */
 int uv_multiplex_dispatch(uv_multiplex_t* m);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* UV_MULTIPLEX_H */

@@ -1,6 +1,10 @@
 #ifndef LMDB_HELPERS_H
 #define LMDB_HELPERS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define mdb_fatal(e) { \
         assert(0 != e); \
         fprintf(stderr, "%s:%d - err:%d: %s\n", \
@@ -19,13 +23,13 @@ void mdb_print_db_stats(MDB_dbi dbi, MDB_env *env);
 
 size_t mdb_env_get_mapsize(MDB_env *env);
 
-void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val);
+void mdb_gets(MDB_env *env, MDB_dbi dbi, const char* keystr, MDB_val* val);
 
-int mdb_gets_int(MDB_env *env, MDB_dbi dbi, char* keystr, int *out);
+int mdb_gets_int(MDB_env *env, MDB_dbi dbi, const char* keystr, int *out);
 
-int mdb_puts_int(MDB_txn *txn, MDB_dbi dbi, char* keystr, int in);
+int mdb_puts_int(MDB_txn *txn, MDB_dbi dbi, const char* keystr, int in);
 
-int mdb_puts_int_commit(MDB_env *env, MDB_dbi dbi, char* keystr, int in);
+int mdb_puts_int_commit(MDB_env *env, MDB_dbi dbi, const char* keystr, int in);
 
 /**
  * Delete the first item */
@@ -36,5 +40,9 @@ int mdb_poll(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v);
 int mdb_pop(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v);
 
 void mdb_drop_dbs(MDB_env *env, MDB_dbi dbs[], size_t ndbs);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LMDB_HELPERS_H */

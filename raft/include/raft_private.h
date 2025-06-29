@@ -12,6 +12,10 @@
 
 #include "raft_types.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum {
     RAFT_NODE_STATUS_DISCONNECTED,
     RAFT_NODE_STATUS_CONNECTED,
@@ -152,5 +156,9 @@ extern void *(*__raft_malloc)(size_t size);
 extern void *(*__raft_calloc)(size_t nmemb, size_t size);
 extern void *(*__raft_realloc)(void *ptr, size_t size);
 extern void (*__raft_free)(void *ptr);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RAFT_PRIVATE_H_ */

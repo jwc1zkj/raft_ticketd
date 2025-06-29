@@ -1,6 +1,11 @@
 #ifndef UV_HELPERS_H
 #define UV_HELPERS_H
 #include <uv.h>
+#include <assert.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define uv_fatal(e) { \
         assert(0 != e); \
@@ -12,5 +17,9 @@
  * Bind a listen socket
  * Abort if any failure. */
 void uv_bind_listen_socket(uv_tcp_t* listen, const char* host, const int port, uv_loop_t* loop);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* UV_HELPERS_H */

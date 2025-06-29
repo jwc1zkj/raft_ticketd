@@ -21,6 +21,8 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include "tpl.h"
+
 #define TPL_VERSION 1.6
 
 #ifndef __GNUC__
@@ -73,8 +75,6 @@ typedef unsigned __int64 uint64_t;
 #else
 #include <sys/mman.h>   /* mmap */
 #endif
-
-#include "tpl.h"
 
 #define TPL_GATHER_BUFLEN 8192
 #define TPL_MAGIC "tpl"
@@ -293,7 +293,7 @@ static tpl_node *tpl_node_new(tpl_node *parent) {
  * on Sparc, and apparently on 64 bit x86. We use a helper structure
  * to detect whether double is aligned in this compilation environment.
  */
-char *calc_field_addr(tpl_node *parent, int type,char *struct_addr, int ordinal) {
+const char *calc_field_addr(tpl_node *parent, int type, const char *struct_addr, int ordinal) {
     tpl_node *prev;
     int offset;
     int align_sz;
@@ -320,7 +320,7 @@ char *calc_field_addr(tpl_node *parent, int type,char *struct_addr, int ordinal)
     return struct_addr + offset;
 }
 
-TPL_API tpl_node *tpl_map(char *fmt,...) {
+TPL_API tpl_node *tpl_map(const char *fmt,...) {
   va_list ap;
   tpl_node *tn;
 
@@ -330,10 +330,10 @@ TPL_API tpl_node *tpl_map(char *fmt,...) {
   return tn;
 }
 
-TPL_API tpl_node *tpl_map_va(char *fmt, va_list ap) {
+TPL_API tpl_node *tpl_map_va(const char *fmt, va_list ap) {
     int lparen_level=0,expect_lparen=0,t=0,in_structure=0,ordinal=0;
     int in_nested_structure=0;
-    char *c, *peek, *struct_addr=NULL, *struct_next;
+    const char *c, *peek, *struct_addr=NULL, *struct_next;
     tpl_node *root,*parent,*n=NULL,*preceding,*iter_start_node=NULL,
              *struct_widest_node=NULL, *np; tpl_pidx *pidx;
     tpl_pound_data *pd;
@@ -388,7 +388,7 @@ TPL_API tpl_node *tpl_map_va(char *fmt, va_list ap) {
                     if (tpl_types[n->type].sz > tpl_types[struct_widest_node->type].sz) {
                       struct_widest_node = n;
                     }
-                    n->addr = calc_field_addr(parent,n->type,struct_addr,ordinal++);
+                    n->addr = (void*)calc_field_addr(parent,n->type,struct_addr,ordinal++);
                 } else n->addr = (void*)va_arg(ap,void*);
                 n->data = tpl_hook.malloc(tpl_types[t].sz);
                 if (!n->data) fatal_oom();
@@ -408,7 +408,7 @@ TPL_API tpl_node *tpl_map_va(char *fmt, va_list ap) {
                     if (tpl_types[n->type].sz > tpl_types[struct_widest_node->type].sz) {
                       struct_widest_node = n;
                     }
-                    n->addr = calc_field_addr(parent,n->type,struct_addr,ordinal++);
+                    n->addr = (void*)calc_field_addr(parent,n->type,struct_addr,ordinal++);
                 } else n->addr = (void*)va_arg(ap,void*);
                 n->data = tpl_hook.malloc(sizeof(char*));
                 if (!n->data) fatal_oom();

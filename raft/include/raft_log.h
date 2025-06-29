@@ -2,6 +2,9 @@
 #define RAFT_LOG_H_
 
 #include "raft_types.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef void* log_t;
 
@@ -56,5 +59,9 @@ raft_index_t log_get_current_idx(log_t* me_);
 int log_load_from_snapshot(log_t *me_, raft_index_t idx, raft_term_t term);
 
 raft_index_t log_get_base(log_t* me_);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* RAFT_LOG_H_ */

@@ -80,7 +80,7 @@ void mdb_print_db_stats(MDB_dbi dbi, MDB_env *env)
     printf("ms_depth: %d\n", stat.ms_depth);
     printf("ms_branch_pages: %zu\n", stat.ms_branch_pages);
     printf("ms_leaf_pages: %zu\n", stat.ms_leaf_pages);
-    printf("ms_overflow_pages: %ld\n", stat.ms_overflow_pages);
+    printf("ms_overflow_pages: %zu\n", stat.ms_overflow_pages);
     printf("ms_entries: %zu\n", stat.ms_entries);
     printf("me_mapsize: %zu\n", mdb_env_get_mapsize(env));
 
@@ -101,7 +101,7 @@ size_t mdb_env_get_mapsize(MDB_env *env)
     return info.me_mapsize;
 }
 
-void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
+void mdb_gets(MDB_env *env, MDB_dbi dbi, const char* keystr, MDB_val* val)
 {
     MDB_txn *txn;
 
@@ -109,7 +109,7 @@ void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
     if (0 != e)
         mdb_fatal(e);
 
-    MDB_val key = { .mv_size = strlen(keystr), .mv_data = keystr };
+    MDB_val key = { .mv_size = strlen(keystr), .mv_data = (void*)keystr };
 
     e = mdb_get(txn, dbi, &key, val);
     switch (e)
@@ -129,7 +129,7 @@ void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
         mdb_fatal(e);
 }
 
-int mdb_gets_int(MDB_env *env, MDB_dbi dbi, char* keystr, int *out)
+int mdb_gets_int(MDB_env *env, MDB_dbi dbi, const char* keystr, int *out)
 {
     MDB_val val;
     mdb_gets(env, dbi, keystr, &val);
@@ -141,9 +141,9 @@ int mdb_gets_int(MDB_env *env, MDB_dbi dbi, char* keystr, int *out)
     return -1;
 }
 
-int mdb_puts_int(MDB_txn* txn, MDB_dbi dbi, char* keystr, int in)
+int mdb_puts_int(MDB_txn* txn, MDB_dbi dbi, const char* keystr, int in)
 {
-    MDB_val key = { .mv_size = strlen(keystr), .mv_data = keystr };
+    MDB_val key = { .mv_size = strlen(keystr), .mv_data = (void*)keystr };
     MDB_val val = { .mv_size = sizeof(int), .mv_data = &in };
 
     int e = mdb_put(txn, dbi, &key, &val, 0);
@@ -158,7 +158,7 @@ int mdb_puts_int(MDB_txn* txn, MDB_dbi dbi, char* keystr, int in)
     return 0;
 }
 
-int mdb_puts_int_commit(MDB_env *env, MDB_dbi dbi, char* keystr, int in)
+int mdb_puts_int_commit(MDB_env *env, MDB_dbi dbi, const char* keystr, int in)
 {
     MDB_txn *txn;
 
