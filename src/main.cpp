@@ -16,7 +16,7 @@
 #include "lmdb_helpers.h"
 // #include "raft.h"
 #include "uv_helpers.h"
-#include "uv_multiplex.h"
+// #include "uv_multiplex.h"
 // #include "tpl.h"
 #include "arraytools.h"
 #include "main.h"
@@ -152,126 +152,6 @@ unsigned int __generate_ticket()
     } while (__check_if_ticket_exists(ticket));
     return ticket;
 }
-
-#if 0
-/** HTTP POST entry point for receiving entries from client
- * Provide the user with an ID */
-static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
-{
-    static h2o_generator_t generator = { NULL, NULL };
-
-    if (!h2o_memis(req->method.base, req->method.len, H2O_STRLIT("POST")))
-        return -1;
-
-    raft_node_t* leader = raft_get_current_leader_node(sv->raft);
-    if (!leader)
-        return h2oh_respond_with_error(req, 503, "Leader unavailable");
-    else if (raft_node_get_id(leader) != sv->node_id)
-    {
-        peer_connection_t* leader_conn = raft_node_get_udata(leader);
-        char leader_url[LEADER_URL_LEN];
-        static h2o_generator_t generator = { NULL, NULL };
-        static h2o_iovec_t body = { .base = "", .len = 0 };
-        req->res.status = 301;
-        req->res.reason = "Moved Permanently";
-        h2o_start_response(req, &generator);
-        snprintf(leader_url, LEADER_URL_LEN, "http://%s:%d/",
-                 inet_ntoa(leader_conn->addr.sin_addr),
-                 leader_conn->http_port);
-        h2o_add_header(&req->pool,
-                       &req->res.headers,
-                       H2O_TOKEN_LOCATION,
-                       NULL,
-                       leader_url,
-                       strlen(leader_url));
-        h2o_send(req, &body, 1, 1);
-        return 0;
-    }
-
-    int e;
-
-    unsigned int ticket = __generate_ticket();
-
-    msg_entry_t entry = {};
-    entry.id = rand();
-    entry.data.buf = (void*)&ticket;
-    entry.data.len = sizeof(ticket);
-
-    uv_mutex_lock(&sv->raft_lock);
-
-    msg_entry_response_t r;
-    e = raft_recv_entry(sv->raft, &entry, &r);
-    if (0 != e)
-        return h2oh_respond_with_error(req, 500, "BAD");
-
-    /* block until the entry is committed */
-    int done = 0, tries = 0;
-    do
-    {
-        if (3 < tries)
-        {
-            printf("ERROR: failed to commit entry\n");
-            uv_mutex_unlock(&sv->raft_lock);
-            return h2oh_respond_with_error(req, 400, "TRY AGAIN");
-        }
-
-        uv_cond_wait(&sv->appendentries_received, &sv->raft_lock);
-        e = raft_msg_entry_response_committed(sv->raft, &r);
-        tries += 1;
-        switch (e)
-        {
-        case 0:
-            /* not committed yet */
-            break;
-        case 1:
-            done = 1;
-            uv_mutex_unlock(&sv->raft_lock);
-            break;
-        case -1:
-            uv_mutex_unlock(&sv->raft_lock);
-            return h2oh_respond_with_error(req, 400, "TRY AGAIN");
-        }
-    }
-    while (!done);
-
-    /* serialize ID */
-    char id_str[100];
-    h2o_iovec_t body;
-    sprintf(id_str, "%d", entry.id);
-    body = h2o_iovec_init(id_str, strlen(id_str));
-
-    req->res.status = 200;
-    req->res.reason = "OK";
-    h2o_start_response(req, &generator);
-    h2o_send(req, &body, 1, 1);
-    return 0;
-}
-
-/** Received an HTTP connection from client */
-static void __on_http_connection(uv_stream_t *listener, const int status)
-{
-    int e;
-
-    if (0 != status)
-        uv_fatal(status);
-
-    uv_tcp_t *tcp = calloc(1, sizeof(*tcp));
-    e = uv_tcp_init(listener->loop, tcp);
-    if (0 != status)
-        uv_fatal(e);
-
-    e = uv_accept(listener, (uv_stream_t*)tcp);
-    if (0 != e)
-        uv_fatal(e);
-
-    struct timeval connected_at = *h2o_get_timestamp(&sv->ctx, NULL, NULL);
-
-    h2o_socket_t *sock = h2o_uv_socket_create((uv_stream_t*)tcp, (uv_close_cb)free);
-    sv->accept_ctx.ctx = &sv->ctx;
-    sv->accept_ctx.hosts = sv->cfg.hosts;
-    h2o_http1_accept(&sv->accept_ctx, sock, connected_at);
-}
-#endif
 
 /** Initiate connection if we are disconnected */
 static int __connect_if_needed(peer_connection_t *conn)
@@ -973,8 +853,8 @@ static int __raft_logentry_offer(
 {
     MDB_txn *txn;
 
-    if (raft_entry_is_cfg_change(ety))
-        __offer_cfg_change(sv, raft, static_cast<const unsigned char *>(ety->data.buf), static_cast<raft_logtype_e>(ety->type));
+    // if (raft_entry_is_cfg_change(ety))
+    //     __offer_cfg_change(sv, raft, static_cast<const unsigned char *>(ety->data.buf), static_cast<raft_logtype_e>(ety->type));
 
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
@@ -1101,9 +981,9 @@ static int __raft_log_get_node_id(
     raft_entry_t *entry,
     raft_index_t ety_idx)
 {
-    return sv->node_id;
-    // entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>((void *)entry->data.buf);
-    // return change->node_id;
+    // return sv->node_id;
+    entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>((void *)entry->data.buf);
+    return change->node_id;
 }
 
 /** Non-voting node now has enough logs to be able to vote.
@@ -1129,13 +1009,21 @@ __raft_notify_membership_event(
     raft_entry_t *entry,
     raft_membership_e type)
 {
+    entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>(entry->data.buf);
+    peer_connection_t *conn = __find_connection(sv, change->host, change->raft_port);
     switch (type)
     {
     case RAFT_MEMBERSHIP_ADD:
-        // raft_node_set_udata(node, user_data);
+        if (!conn)
+        {
+            conn = __new_connection(sv);
+            __connection_set_peer(conn, change->host, change->raft_port);
+            conn->http_port = change->http_port;
+        }
+        raft_node_set_udata(node, conn);
         break;
     case RAFT_MEMBERSHIP_REMOVE:
-        // raft_node_set_udata(node, NULL);
+        raft_node_set_udata(node, NULL);
         break;
     }
     return;
@@ -1346,20 +1234,6 @@ static void __new_db(server_t *sv)
     mdb_db_create(&sv->state, sv->db_env, "state");
 }
 
-// static void __start_http_socket(server_t *sv, const char *host, int port, uv_tcp_t *listen, uv_multiplex_t *m)
-// {
-//     memset(&sv->http_loop, 0, sizeof(uv_loop_t));
-//     int e = uv_loop_init(&sv->http_loop);
-//     if (0 != e)
-//         uv_fatal(e);
-//     uv_bind_listen_socket(listen, host, port, &sv->http_loop);
-//     uv_multiplex_init(m, listen, IPC_PIPE_NAME, HTTP_WORKERS,
-//                       __http_worker_start);
-//     for (int i = 0; i < HTTP_WORKERS; i++)
-//         uv_multiplex_worker_create(m, i, NULL);
-//     uv_multiplex_dispatch(m);
-// }
-
 static void __start_peer_socket(server_t *sv, const char *host, int port, uv_tcp_t *listen)
 {
     memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
@@ -1415,21 +1289,6 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    // /* web server for clients */
-    // h2o_pathconf_t *pathconf;
-    // h2o_handler_t *handler;
-    // h2o_hostconf_t *hostconf;
-
-    // h2o_config_init(&sv->cfg);
-    // hostconf = h2o_config_register_host(&sv->cfg,
-    //                                     h2o_iovec_init(H2O_STRLIT("default")),
-    //                                     ANYPORT);
-
-    // /* HTTP route for receiving entries from clients */
-    // pathconf = h2o_config_register_path(hostconf, "/", 0);
-    // h2o_chunked_register(pathconf);
-    // handler = h2o_create_handler(pathconf, sizeof(*handler));
-    // handler->on_req = __http_get_id;
     http_server http_srv;
 
     /* lock and condition to support HTTP client blocking */
@@ -1437,7 +1296,7 @@ int main(int argc, char **argv)
     uv_cond_init(&sv->appendentries_received);
 
     uv_tcp_t http_listen, peer_listen;
-    uv_multiplex_t m;
+    // uv_multiplex_t m;
 
     /* get ID */
     if (opts.start || opts.join)
@@ -1457,7 +1316,7 @@ int main(int argc, char **argv)
     }
 
     /* add self */
-    raft_add_node(sv->raft, NULL, sv->node_id, 1);
+    // raft_add_node(sv->raft, NULL, sv->node_id, 1);
 
     if (opts.start || opts.join)
     {

@@ -970,7 +970,7 @@ raft_node_t* raft_add_node_internal(raft_server_t* me_, raft_entry_t *ety, void*
         }
         else
             /* we shouldn't add a node twice */
-            return node;
+            return NULL;
     }
 
     node = raft_node_new(udata, id);
@@ -1002,11 +1002,10 @@ raft_node_t* raft_add_node(raft_server_t* me_, void* udata, raft_node_id_t id, i
 
 static raft_node_t* raft_add_non_voting_node_internal(raft_server_t* me_, raft_entry_t *ety, void* udata, raft_node_id_t id, int is_self)
 {
-    raft_node_t* node = raft_get_node(me_, id);
-    if (node)
-        return node;
+    if (raft_get_node(me_, id))
+        return NULL;
 
-    node = raft_add_node_internal(me_, ety, udata, id, is_self);
+    raft_node_t* node = raft_add_node_internal(me_, ety, udata, id, is_self);
     if (!node)
         return NULL;
 

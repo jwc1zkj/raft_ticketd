@@ -17,7 +17,6 @@ target_link_libraries(${TGT}
     container_of 
     lmdb_helpers
     uv_helpers
-    uv_multiplex
     fmt::fmt-header-only
     Boost::beast
     Boost::asio
