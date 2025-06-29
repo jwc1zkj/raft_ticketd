@@ -316,6 +316,12 @@ static int __offer_cfg_change(server_t *sv,
     conn->http_port = change->http_port;
 
     int is_self = change->node_id == sv->node_id;
+    if (is_self)
+    {
+        conn->node = raft_get_node(raft, sv->node_id);
+        raft_node_set_udata(conn->node, conn);
+        return 0;
+    }
 
     switch (change_type)
     {
@@ -1009,6 +1015,10 @@ __raft_notify_membership_event(
     raft_entry_t *entry,
     raft_membership_e type)
 {
+    if (!entry)
+    {
+        return;
+    }
     entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>(entry->data.buf);
     peer_connection_t *conn = __find_connection(sv, change->host, change->raft_port);
     switch (type)
@@ -1063,6 +1073,8 @@ static void __periodic(uv_timer_t *handle)
             __send_leave(leader_conn);
         }
     }
+
+    printf("raft_get_num_voting_nodes: %d\n", raft_get_num_voting_nodes(sv->raft));
 
     raft_apply_all(sv->raft);
 
@@ -1170,21 +1182,6 @@ static int __load_opts(server_t *sv, options_t *opts)
     asprintf(&opts->raft_port, "%d", raft_port);
     return 0;
 }
-
-// static void __http_worker_start(void *uv_tcp)
-// {
-//     uv_tcp_t *listener = uv_tcp;
-
-//     h2o_context_init(&sv->ctx, listener->loop, &sv->cfg);
-
-//     int e = uv_listen((uv_stream_t *)listener,
-//                       MAX_HTTP_CONNECTIONS,
-//                       __on_http_connection);
-//     if (0 != e)
-//         uv_fatal(e);
-
-//     uv_run(listener->loop, UV_RUN_DEFAULT);
-// }
 
 static void __drop_db(server_t *sv)
 {
@@ -1316,7 +1313,8 @@ int main(int argc, char **argv)
     }
 
     /* add self */
-    // raft_add_node(sv->raft, NULL, sv->node_id, 1);
+    raft_add_node(sv->raft, NULL, sv->node_id, 1);
+    raft_node_t* node = raft_get_node(sv->raft, sv->node_id);
 
     if (opts.start || opts.join)
     {
@@ -1330,7 +1328,15 @@ int main(int argc, char **argv)
 
         if (opts.start)
         {
+            peer_connection_t *conn = __new_connection(sv);
+            __connection_set_peer(conn, opts.host, atoi(opts.raft_port));
+            conn->http_port = atoi(opts.http_port);
+            conn->node = node;
+
+            raft_node_set_udata(node, conn);
+            raft_node_set_voting(node, 0);
             raft_become_leader(sv->raft);
+
             /* We store membership configuration inside the Raft log.
              * This configuration change is going to be the initial membership
              * configuration (ie. original node) inside the Raft log. The
@@ -1340,9 +1346,17 @@ int main(int argc, char **argv)
                                 atoi(opts.raft_port),
                                 atoi(opts.http_port),
                                 sv->node_id);
+
+            // raft_node_set_voting(node, 1);
+            // raft_node_set_voting(conn->node, 1);
+            // raft_node_set_active(sv->raft, 1);
+
+            // raft_set_commit_idx(sv->raft, raft_get_current_idx(sv->raft));
         }
         else
         {
+            raft_become_follower(sv->raft);
+
             addr_parse_result_t res;
             parse_addr(opts.PEER, strlen(opts.PEER), &res);
             res.host[res.host_len] = '\0';
