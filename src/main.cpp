@@ -369,6 +369,14 @@ static int __raft_send_appendentries(
     return 0;
 }
 
+static int __raft_send_snapshot(
+    raft_server_t *raft,
+    void *user_data,
+    raft_node_t *node)
+{
+    return 0;
+}
+
 static void __delete_connection(server_t *sv, peer_connection_t *conn)
 {
     peer_connection_t *prev = NULL;
@@ -1075,6 +1083,29 @@ static int __raft_logentry_pop(
     return 0;
 }
 
+static int __raft_log_clear(
+    raft_server_t *raft,
+    void *udata,
+    raft_entry_t *entry,
+    raft_index_t ety_idx)
+{
+    return 0;
+}
+
+/** Callback for determining which node this configuration log entry
+ * affects. This call only applies to configuration change log entries.
+ * @return the node ID of the node */
+static int __raft_log_get_node_id(
+    raft_server_t *raft,
+    void *udata,
+    raft_entry_t *entry,
+    raft_index_t ety_idx)
+{
+    return sv->node_id;
+    // entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>((void *)entry->data.buf);
+    // return change->node_id;
+}
+
 /** Non-voting node now has enough logs to be able to vote.
  * Append a finalization cfg log entry. */
 static int __raft_node_has_sufficient_logs(
@@ -1090,16 +1121,40 @@ static int __raft_node_has_sufficient_logs(
                                raft_node_get_id(conn->node));
 }
 
+static void
+__raft_notify_membership_event(
+    raft_server_t *raft,
+    void *user_data,
+    raft_node_t *node,
+    raft_entry_t *entry,
+    raft_membership_e type)
+{
+    switch (type)
+    {
+    case RAFT_MEMBERSHIP_ADD:
+        // raft_node_set_udata(node, user_data);
+        break;
+    case RAFT_MEMBERSHIP_REMOVE:
+        // raft_node_set_udata(node, NULL);
+        break;
+    }
+    return;
+}
+
 raft_cbs_t raft_funcs = {
     .send_requestvote = __raft_send_requestvote,
     .send_appendentries = __raft_send_appendentries,
+    .send_snapshot = __raft_send_snapshot,
     .applylog = __raft_applylog,
     .persist_vote = __raft_persist_vote,
     .persist_term = __raft_persist_term,
     .log_offer = __raft_logentry_offer,
     .log_poll = __raft_logentry_poll,
     .log_pop = __raft_logentry_pop,
+    .log_clear = __raft_log_clear,
+    .log_get_node_id = __raft_log_get_node_id,
     .node_has_sufficient_logs = __raft_node_has_sufficient_logs,
+    .notify_membership_event = __raft_notify_membership_event,
     .log = __raft_log,
 };
 
@@ -1251,7 +1306,7 @@ static void __drop_db(server_t *sv)
 
 static void __start_raft_periodic_timer(server_t *sv)
 {
-    uv_timer_t *periodic_req = static_cast<uv_timer_t*>(calloc(1, sizeof(uv_timer_t)));
+    uv_timer_t *periodic_req = static_cast<uv_timer_t *>(calloc(1, sizeof(uv_timer_t)));
     periodic_req->data = sv;
     uv_timer_init(&sv->peer_loop, periodic_req);
     uv_timer_start(periodic_req, __periodic, 0, PERIOD_MSEC);
