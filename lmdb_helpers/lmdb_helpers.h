@@ -1,5 +1,6 @@
 #ifndef LMDB_HELPERS_H
 #define LMDB_HELPERS_H
+#include <lmdb.h>
 
 #ifdef __cplusplus
 extern "C" {
