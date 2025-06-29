@@ -34,7 +34,14 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 include(CTest)
 
+add_subdirectory("arraytools")
+add_subdirectory("container_of")
+add_subdirectory("uv_helpers")
+add_subdirectory("uv_multiplex")
+add_subdirectory("lmdb_helpers")
+# add_subdirectory("h2o_helpers")
 add_subdirectory("raft")
+add_subdirectory("tpl")
 add_subdirectory("src")
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")
