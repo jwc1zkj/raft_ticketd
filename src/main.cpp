@@ -208,7 +208,9 @@ static int __raft_send_appendentries(
     msg.ae.prev_log_idx = m->prev_log_idx;
     msg.ae.prev_log_term = m->prev_log_term;
     msg.ae.leader_commit = m->leader_commit;
-    msg.ae.n_entries = m->n_entries;
+    msg.ae.n_entries = 0;
+    if (0 < m->n_entries)
+        msg.ae.n_entries = 1;
     ptr += __peer_msg_serialize(tpl_map("S(I$(IIIII))", &msg), bufs, ptr);
 
     /* appendentries with payload */
@@ -237,6 +239,9 @@ static int __raft_send_appendentries(
             uv_fatal(e);
 
         tpl_free(tn);
+
+        printf("send entry(id: %d, term: %d, type: %d, len: %d)\n",
+               m->entries[0].id, m->entries[0].term, m->entries[0].type, m->entries[0].data.len);
     }
     else
     {
@@ -316,12 +321,12 @@ static int __offer_cfg_change(server_t *sv,
     conn->http_port = change->http_port;
 
     int is_self = change->node_id == sv->node_id;
-    if (is_self)
-    {
-        conn->node = raft_get_node(raft, sv->node_id);
-        raft_node_set_udata(conn->node, conn);
-        return 0;
-    }
+    // if (is_self)
+    // {
+    //     conn->node = raft_get_node(raft, sv->node_id);
+    //     raft_node_set_udata(conn->node, conn);
+    //     return 0;
+    // }
 
     switch (change_type)
     {
@@ -355,7 +360,7 @@ static int __raft_applylog(
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
         mdb_fatal(e);
-
+#if 0
     /* Check if it's a configuration change */
     if (raft_entry_is_cfg_change(ety))
     {
@@ -367,7 +372,7 @@ static int __raft_applylog(
         __send_leave_response(conn);
         goto commit;
     }
-
+#endif
     /* This log affects the ticketd state machine */
     e = mdb_put(txn, sv->tickets, &key, &val, 0);
     switch (e)
@@ -454,13 +459,16 @@ static void __deserialize_appendentries_payload(msg_entry_t *out,
                                                 size_t sz)
 {
     tpl_bin tb;
-    tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz),
+    char *fmt = tpl_peek(TPL_MEM, img, sz);
+    tpl_node *tn = tpl_map(fmt,
                            &out->id,
                            &out->term,
                            &out->type,
                            &tb);
+    free(fmt);
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
+    tpl_free(tn);
     out->data.buf = tb.addr;
     out->data.len = tb.sz;
 }
@@ -482,6 +490,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         __deserialize_appendentries_payload(&entry, conn, img, sz);
 
+        printf("recv entry(id: %d, term: %d, type: %d, len: %d)\n",
+               entry.id, entry.term, entry.type, entry.data.len);
         conn->ae.ae.entries = &entry;
         msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
         e = raft_recv_appendentries(sv->raft, conn->node, &conn->ae.ae, &msg.aer);
@@ -491,14 +501,18 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         char buf[RAFT_BUFLEN];
         __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
 
+        // free(entry.data.buf);
+
         conn->n_expected_entries = 0;
         return 0;
     }
 
     /* deserialize message */
-    tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &m);
+    char *fmt = tpl_peek(TPL_MEM, img, sz);
+    tpl_node *tn = tpl_map(fmt, &m);
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
+    tpl_free(tn);
 
     switch (m.type)
     {
@@ -643,6 +657,7 @@ static void __peer_read_cb(uv_stream_t *tcp, ssize_t nread, const uv_buf_t *buf)
         case UV__ECONNRESET:
         case UV__EOF:
             conn->connection_status = DISCONNECTED;
+            __delete_connection(sv, conn);
             return;
         default:
             uv_fatal(nread);
@@ -913,7 +928,7 @@ static int __raft_logentry_offer(
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
-
+#if 0
     /* So that our entry points to a valid buffer, get the mmap'd buffer.
      * This is because the currently pointed to buffer is temporary. */
     e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
@@ -934,7 +949,7 @@ static int __raft_logentry_offer(
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
-
+#endif
     return 0;
 }
 
@@ -975,6 +990,12 @@ static int __raft_log_clear(
     raft_entry_t *entry,
     raft_index_t ety_idx)
 {
+    if (entry && entry->data.buf)
+    {
+        free(entry->data.buf);
+        entry->data.buf = nullptr;
+        entry->data.len = 0;
+    }
     return 0;
 }
 
@@ -1015,24 +1036,29 @@ __raft_notify_membership_event(
     raft_entry_t *entry,
     raft_membership_e type)
 {
-    if (!entry)
-    {
-        return;
-    }
-    entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>(entry->data.buf);
-    peer_connection_t *conn = __find_connection(sv, change->host, change->raft_port);
+    entry_cfg_change_t *change = nullptr;
+    peer_connection_t *conn = nullptr;
     switch (type)
     {
     case RAFT_MEMBERSHIP_ADD:
+        if (!entry)
+        {
+            break;
+        }
+        change = static_cast<entry_cfg_change_t *>(entry->data.buf);
+        conn = __find_connection(sv, change->host, change->raft_port);
         if (!conn)
         {
             conn = __new_connection(sv);
             __connection_set_peer(conn, change->host, change->raft_port);
-            conn->http_port = change->http_port;
         }
+        conn->node = node;
+        conn->http_port = change->http_port;
         raft_node_set_udata(node, conn);
         break;
     case RAFT_MEMBERSHIP_REMOVE:
+        conn = (peer_connection_t *)raft_node_get_udata(node);
+        __send_leave_response(conn);
         raft_node_set_udata(node, NULL);
         break;
     }
@@ -1061,6 +1087,8 @@ static void __periodic(uv_timer_t *handle)
 {
     uv_mutex_lock(&sv->raft_lock);
 
+    printf("raft_get_num_voting_nodes: %d/%d\n", raft_get_num_voting_nodes(sv->raft), raft_get_num_nodes(sv->raft));
+
     raft_periodic(sv->raft, PERIOD_MSEC);
 
     if (opts.leave)
@@ -1074,9 +1102,7 @@ static void __periodic(uv_timer_t *handle)
         }
     }
 
-    printf("raft_get_num_voting_nodes: %d\n", raft_get_num_voting_nodes(sv->raft));
-
-    raft_apply_all(sv->raft);
+    // raft_apply_all(sv->raft);
 
     uv_mutex_unlock(&sv->raft_lock);
 }
@@ -1313,8 +1339,9 @@ int main(int argc, char **argv)
     }
 
     /* add self */
-    raft_add_node(sv->raft, NULL, sv->node_id, 1);
-    raft_node_t* node = raft_get_node(sv->raft, sv->node_id);
+    // raft_add_node(sv->raft, NULL, sv->node_id, 1);
+    // raft_node_t* node = raft_get_node(sv->raft, sv->node_id);
+    // raft_add_non_voting_node(sv->raft, NULL, sv->node_id, 1);
 
     if (opts.start || opts.join)
     {
@@ -1328,13 +1355,14 @@ int main(int argc, char **argv)
 
         if (opts.start)
         {
-            peer_connection_t *conn = __new_connection(sv);
-            __connection_set_peer(conn, opts.host, atoi(opts.raft_port));
-            conn->http_port = atoi(opts.http_port);
-            conn->node = node;
-
-            raft_node_set_udata(node, conn);
-            raft_node_set_voting(node, 0);
+            // peer_connection_t *conn = __new_connection(sv);
+            // __connection_set_peer(conn, opts.host, atoi(opts.raft_port));
+            // conn->http_port = atoi(opts.http_port);
+            // conn->node = node;
+            // raft_add_node(sv->raft, NULL, sv->node_id, 1);
+            raft_add_non_voting_node(sv->raft, NULL, sv->node_id, 1);
+            // raft_node_set_udata(node, conn);
+            // raft_node_set_voting(node, 0);
             raft_become_leader(sv->raft);
 
             /* We store membership configuration inside the Raft log.
@@ -1355,7 +1383,9 @@ int main(int argc, char **argv)
         }
         else
         {
-            raft_become_follower(sv->raft);
+            // raft_add_node(sv->raft, NULL, sv->node_id, 1);
+            raft_add_non_voting_node(sv->raft, NULL, sv->node_id, 1);
+            // raft_become_follower(sv->raft);
 
             addr_parse_result_t res;
             parse_addr(opts.PEER, strlen(opts.PEER), &res);

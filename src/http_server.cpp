@@ -379,13 +379,13 @@ private:
                 return send_bad_response(http::status::bad_request /* 400 */, "TRY AGAIN");
             }
 
-            uv_cond_wait(&sv_->appendentries_received, &sv_->raft_lock);
             e = raft_msg_entry_response_committed(sv_->raft, &r);
             tries += 1;
             switch (e)
             {
             case 0:
                 /* not committed yet */
+                uv_cond_wait(&sv_->appendentries_received, &sv_->raft_lock);
                 break;
             case 1:
                 done = 1;
