@@ -35,6 +35,8 @@ typedef enum
     MSG_HANDSHAKE_RESPONSE,
     /** Tell leader we want to leave the cluster */
     /* When instance is ctrl-c'd we have to gracefuly disconnect */
+    MSG_DEMOTE,
+    MSG_DEMOTE_RESPONSE,
     MSG_LEAVE,
     /* Receiving a leave response means we can shutdown */
     MSG_LEAVE_RESPONSE,
@@ -174,6 +176,8 @@ typedef struct
 
     /* Link list of peer connections */
     peer_connection_t *conns;
+
+    int load_flag;  /* 加载标志 */
 } server_t;
 
 unsigned int __generate_ticket();
