@@ -125,7 +125,8 @@ static int __check_if_ticket_exists(const unsigned int ticket)
     if (0 != e)
         mdb_fatal(e);
 
-    MDB_val v, k = {.mv_size = sizeof(ticket), .mv_data = (void *)&ticket};
+    // MDB_val v, k = {.mv_size = sizeof(ticket), .mv_data = (void *)&ticket};
+    MDB_val v, k = {sizeof(ticket), (void *)&ticket};
 
     e = mdb_get(txn, sv->tickets, &k, &v);
     switch (e)
@@ -223,9 +224,13 @@ static int __raft_send_appendentries(
     /* appendentries with payload */
     if (0 < m->n_entries)
     {
+        // tpl_bin tb = {
+        //     .addr = m->entries[0].data.buf,
+        //     .sz = m->entries[0].data.len,
+        // };
         tpl_bin tb = {
-            .addr = m->entries[0].data.buf,
-            .sz = m->entries[0].data.len,
+            m->entries[0].data.buf,
+            m->entries[0].data.len,
         };
 
         /* list of entries */
@@ -361,8 +366,10 @@ static int __raft_applylog(
 {
     MDB_txn *txn;
 
-    MDB_val key = {.mv_size = ety->data.len, .mv_data = ety->data.buf};
-    MDB_val val = {.mv_size = 0, .mv_data = (void *)"\0"};
+    // MDB_val key = {.mv_size = ety->data.len, .mv_data = ety->data.buf};
+    MDB_val key = {ety->data.len, ety->data.buf};
+    // MDB_val val = {.mv_size = 0, .mv_data = (void *)"\0"};
+    MDB_val val = {0, (void *)"\0"};
 
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
@@ -511,7 +518,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         printf("recv entry(id: %d, term: %d, type: %d, len: %d)\n",
                entry.id, entry.term, entry.type, entry.data.len);
         conn->ae.ae.entries = &entry;
-        msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
+        // msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
+        msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
         e = raft_recv_appendentries(sv->raft, conn->node, &conn->ae.ae, &msg.aer);
 
         /* send response */
@@ -653,7 +661,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         break;
     case MSG_REQUESTVOTE:
     {
-        msg_t msg = {.type = MSG_REQUESTVOTE_RESPONSE};
+        // msg_t msg = {.type = MSG_REQUESTVOTE_RESPONSE};
+        msg_t msg = {MSG_REQUESTVOTE_RESPONSE};
         e = raft_recv_requestvote(sv->raft, conn->node, &m.rv, &msg.rvr);
         __peer_msg_send(conn->stream, tpl_map("S(I$(II))", &msg), bufs, buf);
     }
@@ -671,7 +680,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         }
         {
             /* this is a keep alive message */
-            msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
+            // msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
+            msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
             e = raft_recv_appendentries(sv->raft, conn->node, &m.ae, &msg.aer);
             __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
         }
@@ -983,8 +993,10 @@ static int __raft_logentry_offer(
 
     /* 1. put metadata */
     ety_idx <<= 1;
-    MDB_val key = {.mv_size = sizeof(ety_idx), .mv_data = (void *)&ety_idx};
-    MDB_val val = {.mv_size = bufs->len, .mv_data = bufs->base};
+    // MDB_val key = {.mv_size = sizeof(ety_idx), .mv_data = (void *)&ety_idx};
+    MDB_val key = {sizeof(ety_idx), (void *)&ety_idx};
+    // MDB_val val = {.mv_size = bufs->len, .mv_data = bufs->base};
+    MDB_val val = {bufs->len, bufs->base};
 
     e = mdb_put(txn, sv->entries, &key, &val, 0);
     switch (e)
@@ -1163,21 +1175,38 @@ __raft_notify_membership_event(
     return;
 }
 
+// raft_cbs_t raft_funcs = {
+//     .send_requestvote = __raft_send_requestvote,
+//     .send_appendentries = __raft_send_appendentries,
+//     .send_snapshot = __raft_send_snapshot,
+//     .applylog = __raft_applylog,
+//     .persist_vote = __raft_persist_vote,
+//     .persist_term = __raft_persist_term,
+//     .log_offer = __raft_logentry_offer,
+//     .log_poll = __raft_logentry_poll,
+//     .log_pop = __raft_logentry_pop,
+//     .log_clear = __raft_log_clear,
+//     .log_get_node_id = __raft_log_get_node_id,
+//     .node_has_sufficient_logs = __raft_node_has_sufficient_logs,
+//     .notify_membership_event = __raft_notify_membership_event,
+//     .log = __raft_log,
+// };
+
 raft_cbs_t raft_funcs = {
-    .send_requestvote = __raft_send_requestvote,
-    .send_appendentries = __raft_send_appendentries,
-    .send_snapshot = __raft_send_snapshot,
-    .applylog = __raft_applylog,
-    .persist_vote = __raft_persist_vote,
-    .persist_term = __raft_persist_term,
-    .log_offer = __raft_logentry_offer,
-    .log_poll = __raft_logentry_poll,
-    .log_pop = __raft_logentry_pop,
-    .log_clear = __raft_log_clear,
-    .log_get_node_id = __raft_log_get_node_id,
-    .node_has_sufficient_logs = __raft_node_has_sufficient_logs,
-    .notify_membership_event = __raft_notify_membership_event,
-    .log = __raft_log,
+    __raft_send_requestvote,
+    __raft_send_appendentries,
+    __raft_send_snapshot,
+    __raft_applylog,
+    __raft_persist_vote,
+    __raft_persist_term,
+    __raft_logentry_offer,
+    __raft_logentry_poll,
+    __raft_logentry_pop,
+    __raft_log_clear,
+    __raft_log_get_node_id,
+    __raft_node_has_sufficient_logs,
+    __raft_notify_membership_event,
+    __raft_log,
 };
 
 /** Raft callback for handling periodic logic */

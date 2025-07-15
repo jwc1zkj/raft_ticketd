@@ -812,7 +812,7 @@ int raft_apply_entry(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    if (!raft_is_apply_allowed(me_)) 
+    if (!raft_is_apply_allowed(me_))
         return -1;
 
     /* Don't apply after the commit_idx */
@@ -889,7 +889,7 @@ int raft_send_appendentries(raft_server_t* me_, raft_node_t* node)
     if (!(me->cb.send_appendentries))
         return -1;
 
-    msg_appendentries_t ae = {};
+    msg_appendentries_t ae = {0};
     ae.term = me->current_term;
     ae.leader_commit = raft_get_commit_idx(me_);
     ae.prev_log_idx = 0;
