@@ -787,7 +787,7 @@ int raft_send_requestvote(raft_server_t* me_, raft_node_t* node)
     assert(node);
     assert(node != me->node);
 
-    __log(me_, node, "sending requestvote to: %d", node);
+    __log(me_, node, "sending requestvote to: %d", raft_node_get_id(node));
 
     rv.term = me->current_term;
     rv.last_log_idx = raft_get_current_idx(me_);
