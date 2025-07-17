@@ -360,8 +360,11 @@ private:
         entry.id = rand();
         entry.data.buf = (void *)&ticket;
         entry.data.len = sizeof(ticket);
-
+#if NET_LIBRARY_TYPE
         uv_mutex_lock(&sv_->raft_lock);
+#else
+        std::unique_lock locker(sv_->raft_lock);
+#endif
 
         msg_entry_response_t r;
         e = raft_recv_entry(sv_->raft, &entry, &r);
@@ -375,7 +378,11 @@ private:
             if (3 < tries)
             {
                 printf("ERROR: failed to commit entry\n");
+#if NET_LIBRARY_TYPE
                 uv_mutex_unlock(&sv_->raft_lock);
+#else
+                locker.unlock();
+#endif
                 return send_bad_response(http::status::bad_request /* 400 */, "TRY AGAIN");
             }
 
@@ -384,15 +391,27 @@ private:
             switch (e)
             {
             case 0:
-                /* not committed yet */
+/* not committed yet */
+#if NET_LIBRARY_TYPE
                 uv_cond_wait(&sv_->appendentries_received, &sv_->raft_lock);
+#else
+                sv_->appendentries_received.wait(locker);
+#endif
                 break;
             case 1:
                 done = 1;
+#if NET_LIBRARY_TYPE
                 uv_mutex_unlock(&sv_->raft_lock);
+#else
+                locker.unlock();
+#endif
                 break;
             case -1:
+#if NET_LIBRARY_TYPE
                 uv_mutex_unlock(&sv_->raft_lock);
+#else
+                locker.unlock();
+#endif
                 return send_bad_response(http::status::bad_request /* 400 */, "TRY AGAIN");
             }
         } while (!done);

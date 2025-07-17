@@ -1,7 +1,20 @@
 #ifndef SRC_MAIN_H_
 #define SRC_MAIN_H_
 
+#define NET_LIBRARY_TYPE 0
+
+#if NET_LIBRARY_TYPE
 #include <uv.h>
+#else
+#include <queue>
+#include <mutex>
+#include <vector>
+#include <condition_variable>
+#include <boost/asio.hpp>
+namespace net = boost::asio;      // from <boost/asio.hpp>
+using tcp = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
+#endif
+
 #include <raft.h>
 #include <tpl.h>
 #include <lmdb.h>
@@ -130,14 +143,20 @@ struct peer_connection_s
      * used in tandem with n_expected_entries */
     msg_t ae;
 
+#if NET_LIBRARY_TYPE
     uv_stream_t *stream;
-
     uv_loop_t *loop;
+#else
+    tcp::socket stream;
+    std::queue<net::const_buffer> pending;
+    std::vector<char> reading;
+    net::io_context *loop;
+#endif
 
     peer_connection_t *next;
 };
 
-typedef struct
+typedef struct server_s
 {
     /* the server's node ID */
     int node_id;
@@ -161,10 +180,7 @@ typedef struct
     /* LMDB database environment */
     MDB_env *db_env;
 
-    // h2o_globalconf_t cfg;
-    // h2o_context_t ctx;
-    // h2o_accept_ctx_t accept_ctx;
-
+#if NET_LIBRARY_TYPE
     /* Raft isn't multi-threaded, therefore we use a global lock */
     uv_mutex_t raft_lock;
 
@@ -172,12 +188,23 @@ typedef struct
      * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
 
-    uv_loop_t peer_loop, http_loop;
+    uv_loop_t peer_loop;
+#else
+    /* Raft isn't multi-threaded, therefore we use a global lock */
+    std::mutex raft_lock;
+
+    /* When we receive an entry from the client we need to block until the
+     * entry has been committed. This condition is used to wake us up. */
+    std::condition_variable appendentries_received;
+
+    net::io_context peer_loop{1};
+    net::steady_timer periodic_timer{peer_loop};
+#endif
 
     /* Link list of peer connections */
     peer_connection_t *conns;
 
-    int load_flag;  /* 加载标志 */
+    int load_flag; /* 加载标志 */
 } server_t;
 
 unsigned int __generate_ticket();
