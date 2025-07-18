@@ -87,7 +87,7 @@ static void __send_leave(peer_connection_t *conn);
 static int __send_leave_response(peer_connection_t *conn);
 static int __append_cfg_change(server_t *sv,
                                raft_logtype_e change_type,
-                               char *host,
+                               const char *host,
                                int raft_port, int http_port,
                                int node_id);
 static void __drop_db(server_t *sv);
@@ -136,7 +136,8 @@ static void __peer_do_send(peer_connection_t *conn)
                      {
                          if (!error)
                          {
-                             printf("peer send %zu bytes\n", bytes_transferred);
+                             fprintf(stderr, "%s:%d - peer send %zu bytes\n",
+                                     __FILE__, __LINE__, bytes_transferred);
                              conn->pending.pop();
                              if (!conn->pending.empty())
                              {
@@ -145,7 +146,8 @@ static void __peer_do_send(peer_connection_t *conn)
                          }
                          else
                          {
-                             printf("peer send failed.[%d]%s\n", error.value(), error.message().c_str());
+                             fprintf(stderr, "%s:%d - peer send failed.[%d]%s\n",
+                                     __FILE__, __LINE__, error.value(), error.message().c_str());
                              conn->stream.close();
                              conn->connection_status = DISCONNECTED;
                          }
@@ -323,8 +325,8 @@ static int __raft_send_appendentries(
 #endif
         tpl_free(tn);
 
-        printf("send entry(id: %d, term: %d, type: %d, len: %d)\n",
-               m->entries[0].id, m->entries[0].term, m->entries[0].type, m->entries[0].data.len);
+        fprintf(stderr, "%s:%d - send entry(id: %d, term: %d, type: %d, len: %d)\n", __FILE__, __LINE__,
+                m->entries[0].id, m->entries[0].term, m->entries[0].type, m->entries[0].data.len);
     }
     else
     {
@@ -379,7 +381,7 @@ static peer_connection_t *__find_connection(server_t *sv, const char *host, int 
 {
     peer_connection_t *conn;
     for (conn = sv->conns;
-         conn && (0 != strcmp(host, inet_ntoa(conn->addr.sin_addr)) ||
+         conn && (net::ip::make_address(host) != conn->addr ||
                   conn->raft_port != raft_port);
          conn = conn->next)
         ;
@@ -459,8 +461,8 @@ static int __raft_applylog(
     if (raft_entry_is_cfg_change(ety))
     {
         entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>(ety->data.buf);
-        printf("apply log type: %d([%d]%s:%d, %d)\n", ety->type,
-               change->node_id, change->host, change->raft_port, change->http_port);
+        fprintf(stderr, "%s:%d - apply log type: %d([%d]%s:%d, %d)\n", __FILE__, __LINE__, ety->type,
+                change->node_id, change->host, change->raft_port, change->http_port);
 
         if (!raft_is_leader(sv->raft))
             goto commit;
@@ -534,7 +536,7 @@ static void __peer_alloc_cb(uv_handle_t *handle, size_t size, uv_buf_t *buf)
 
 static int __append_cfg_change(server_t *sv,
                                raft_logtype_e change_type,
-                               char *host,
+                               const char *host,
                                int raft_port, int http_port,
                                int node_id)
 {
@@ -598,8 +600,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         __deserialize_appendentries_payload(&entry, conn, img, sz);
 
-        printf("recv entry(id: %d, term: %d, type: %d, len: %d)\n",
-               entry.id, entry.term, entry.type, entry.data.len);
+        fprintf(stderr, "%s:%d - recv entry(id: %d, term: %d, type: %d, len: %d)\n", __FILE__, __LINE__,
+                entry.id, entry.term, entry.type, entry.data.len);
         conn->ae.ae.entries = &entry;
         // msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
         msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
@@ -633,7 +635,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     case MSG_HANDSHAKE:
     {
         peer_connection_t *nconn = __find_connection(
-            sv, inet_ntoa(conn->addr.sin_addr), m.hs.raft_port);
+            sv, conn->addr.to_string().c_str(), m.hs.raft_port);
         if (nconn && conn != nconn)
             __delete_connection(sv, nconn);
 
@@ -666,7 +668,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         else
         {
             int e = __append_cfg_change(sv, RAFT_LOGTYPE_ADD_NONVOTING_NODE,
-                                        inet_ntoa(conn->addr.sin_addr),
+                                        conn->addr.to_string().c_str(),
                                         m.hs.raft_port, m.hs.http_port,
                                         m.hs.node_id);
             if (0 != e)
@@ -688,8 +690,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                 if (!nconn)
                 {
                     nconn = __new_connection(sv);
-                    printf("Redirecting to %s:%d...\n",
-                           m.hsr.leader_host, m.hsr.leader_port);
+                    fprintf(stderr, "%s:%d - Redirecting to %s:%d...\n", __FILE__, __LINE__,
+                            m.hsr.leader_host, m.hsr.leader_port);
                     __connect_to_peer_at_host(nconn, m.hsr.leader_host,
                                               m.hsr.leader_port);
                 }
@@ -697,54 +699,54 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         }
         else
         {
-            printf("Connected to leader: %s:%d\n",
-                   inet_ntoa(conn->addr.sin_addr), conn->raft_port);
+            fprintf(stderr, "%s:%d - Connected to leader: %s:%d\n", __FILE__, __LINE__,
+                    conn->addr.to_string().c_str(), conn->raft_port);
             if (!conn->node)
                 conn->node = raft_get_node(sv->raft, m.hsr.node_id);
         }
         break;
     case MSG_DEMOTE:
     {
-        printf("recv demote\n");
+        fprintf(stderr, "%s:%d - recv demote\n", __FILE__, __LINE__);
         if (!conn->node)
         {
-            printf("ERROR: no node\n");
+            fprintf(stderr, "%s:%d - ERROR: no node\n", __FILE__, __LINE__);
             return 0;
         }
         int e = __append_cfg_change(sv, RAFT_LOGTYPE_DEMOTE_NODE,
-                                    inet_ntoa(conn->addr.sin_addr),
+                                    conn->addr.to_string().c_str(),
                                     conn->raft_port,
                                     conn->http_port,
                                     raft_node_get_id(conn->node));
         if (0 != e)
-            printf("ERROR: Leave request failed\n");
+            fprintf(stderr, "%s:%d - ERROR: Leave request failed\n", __FILE__, __LINE__);
     }
     break;
     case MSG_DEMOTE_RESPONSE:
-        printf("recv demote response\n");
+        fprintf(stderr, "%s:%d - recv demote response\n", __FILE__, __LINE__);
         __send_leave(conn);
         break;
     case MSG_LEAVE:
     {
-        printf("recv leave\n");
+        fprintf(stderr, "%s:%d - recv leave\n", __FILE__, __LINE__);
         if (!conn->node)
         {
-            printf("ERROR: no node\n");
+            fprintf(stderr, "%s:%d - ERROR: no node\n", __FILE__, __LINE__);
             return 0;
         }
         int e = __append_cfg_change(sv, RAFT_LOGTYPE_REMOVE_NODE,
-                                    inet_ntoa(conn->addr.sin_addr),
+                                    conn->addr.to_string().c_str(),
                                     conn->raft_port,
                                     conn->http_port,
                                     raft_node_get_id(conn->node));
         if (0 != e)
-            printf("ERROR: Leave request failed\n");
+            fprintf(stderr, "%s:%d - ERROR: Leave request failed\n", __FILE__, __LINE__);
     }
     break;
     case MSG_LEAVE_RESPONSE:
-        printf("recv leave response\n");
+        fprintf(stderr, "%s:%d - recv leave response\n", __FILE__, __LINE__);
         __drop_db(sv);
-        printf("Shutdown complete. Quitting...\n");
+        fprintf(stderr, "%s:%d - Shutdown complete. Quitting...\n", __FILE__, __LINE__);
         exit(0);
         break;
     case MSG_REQUESTVOTE:
@@ -791,7 +793,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 #endif
         break;
     default:
-        printf("unknown msg\n");
+        fprintf(stderr, "%s:%d - unknown msg\n", __FILE__, __LINE__);
         exit(0);
     }
     return 0;
@@ -850,7 +852,7 @@ static void __send_demote(peer_connection_t *conn)
     msg_t msg = {};
     msg.type = MSG_DEMOTE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
-    printf("send demote\n");
+    fprintf(stderr, "%s:%d - send demote\n", __FILE__, __LINE__);
 #endif
 }
 
@@ -869,7 +871,7 @@ static void __send_leave(peer_connection_t *conn)
     msg_t msg = {};
     msg.type = MSG_LEAVE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
-    printf("send leave\n");
+    fprintf(stderr, "%s:%d - send leave\n", __FILE__, __LINE__);
 #endif
 }
 
@@ -900,7 +902,7 @@ static int __send_demote_response(peer_connection_t *conn)
 {
     if (!conn)
     {
-        printf("no connection??\n");
+        fprintf(stderr, "%s:%d - no connection??\n", __FILE__, __LINE__);
         return -1;
     }
 #if NET_LIBRARY_TYPE
@@ -927,7 +929,7 @@ static int __send_leave_response(peer_connection_t *conn)
 {
     if (!conn)
     {
-        printf("no connection??\n");
+        fprintf(stderr, "%s:%d - no connection??\n", __FILE__, __LINE__);
         return -1;
     }
 #if NET_LIBRARY_TYPE
@@ -975,7 +977,7 @@ static int __send_handshake_response(peer_connection_t *conn,
         {
             msg.hsr.leader_port = leader_conn->raft_port;
             snprintf(msg.hsr.leader_host, IP_STR_LEN, "%s",
-                     inet_ntoa(leader_conn->addr.sin_addr));
+                     leader_conn->addr.to_string().c_str());
         }
     }
 
@@ -1052,7 +1054,7 @@ static void __on_peer_connection(tcp::socket &&peer)
     conn->stream = std::move(peer);
 
     boost::system::error_code ec;
-    auto remote_ep = peer.remote_endpoint(ec);
+    auto remote_ep = conn->stream.remote_endpoint(ec);
     if (ec)
     {
         fprintf(stderr, "%s:%d - err: [%d]%s\n",
@@ -1060,9 +1062,7 @@ static void __on_peer_connection(tcp::socket &&peer)
         exit(1);
     }
 
-    conn->addr.sin_family = AF_INET;
-    conn->addr.sin_port = htons(remote_ep.port());
-    conn->addr.sin_addr.s_addr = htonl(remote_ep.address().to_v4().to_ulong());
+    conn->addr = remote_ep.address();
 
     __do_peer_read(conn);
 }
@@ -1123,9 +1123,7 @@ static void __on_connection_accepted_by_peer(peer_connection_t *conn)
         exit(1);
     }
 
-    conn->addr.sin_family = AF_INET;
-    conn->addr.sin_port = htons(remote_ep.port());
-    conn->addr.sin_addr.s_addr = htonl(remote_ep.address().to_v4().to_ulong());
+    conn->addr = remote_ep.address();
 
     /* start reading from peer */
     conn->connection_status = CONNECTED;
@@ -1135,9 +1133,8 @@ static void __on_connection_accepted_by_peer(peer_connection_t *conn)
 
 static peer_connection_t *__new_connection(server_t *sv)
 {
-    peer_connection_t *conn = static_cast<peer_connection_t *>(calloc(1, sizeof(peer_connection_t)));
+    peer_connection_t *conn = new peer_connection_t(sv->peer_loop);
 
-    conn->loop = &sv->peer_loop;
     conn->next = sv->conns;
     sv->conns = conn;
     return conn;
@@ -1186,12 +1183,12 @@ static void __connect_to_peer(peer_connection_t *conn)
     conn->connection_status = CONNECTING;
 
     tcp::endpoint ep(
-        net::ip::address_v4(ntohl(conn->addr.sin_addr.s_addr)),
-        ntohs(conn->addr.sin_port));
+        conn->addr,
+        conn->raft_port);
     conn->stream.async_connect(ep,
                                [conn](const boost::system::error_code &ec)
                                {
-                                   if (!ec)
+                                   if (ec)
                                    {
                                        fprintf(stderr, "%s:%d - err: [%d]%s\n",
                                                __FILE__, __LINE__, ec.value(), ec.message().c_str());
@@ -1223,9 +1220,7 @@ static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
         exit(1);
     }
     tcp::endpoint ep{addr, static_cast<net::ip::port_type>(port)};
-    conn->addr.sin_family = AF_INET;
-    conn->addr.sin_port = htons(ep.port());
-    conn->addr.sin_addr.s_addr = htonl(ep.address().to_v4().to_ulong());
+    conn->addr = addr;
     conn->raft_port = port;
 }
 #endif
@@ -1242,7 +1237,7 @@ void __raft_log(raft_server_t *raft, raft_node_t *node, void *udata,
                 const char *buf)
 {
     if (opts.debug)
-        printf("raft: %s\n", buf);
+        fprintf(stderr, "%s:%d - raft: %s\n", __FILE__, __LINE__, buf);
 }
 
 /** Raft callback for appending an item to the log */
@@ -1255,8 +1250,8 @@ static int __raft_logentry_offer(
     if (raft_entry_is_cfg_change(ety))
     {
         entry_cfg_change_t *change = static_cast<entry_cfg_change_t *>(ety->data.buf);
-        printf("log append %d([%d]%s:%d, %d)\n", ety->type,
-               change->node_id, change->host, change->raft_port, change->http_port);
+        fprintf(stderr, "%s:%d - log append %d([%d]%s:%d, %d)\n", __FILE__, __LINE__, ety->type,
+                change->node_id, change->host, change->raft_port, change->http_port);
     }
     if (sv->load_flag)
         return 0;
@@ -1421,7 +1416,7 @@ static int __raft_node_has_sufficient_logs(
 {
     peer_connection_t *conn = static_cast<peer_connection_t *>(raft_node_get_udata(node));
     return __append_cfg_change(sv, RAFT_LOGTYPE_ADD_NODE,
-                               inet_ntoa(conn->addr.sin_addr),
+                               conn->addr.to_string().c_str(),
                                conn->raft_port,
                                conn->http_port,
                                raft_node_get_id(conn->node));
@@ -1445,8 +1440,8 @@ __raft_notify_membership_event(
             break;
         }
         change = static_cast<entry_cfg_change_t *>(entry->data.buf);
-        printf("membership add([%d]%s:%d, %d)\n",
-               change->node_id, change->host, change->raft_port, change->http_port);
+        fprintf(stderr, "%s:%d - membership add([%d]%s:%d, %d)\n", __FILE__, __LINE__,
+                change->node_id, change->host, change->raft_port, change->http_port);
         conn = __find_connection(sv, change->host, change->raft_port);
         if (!conn)
         {
@@ -1531,7 +1526,8 @@ static void __periodic(uv_timer_t *handle)
 {
     std::unique_lock locker(sv->raft_lock);
 
-    printf("raft_get_num_voting_nodes: %d/%d\n", raft_get_num_voting_nodes(sv->raft), raft_get_num_nodes(sv->raft));
+    fprintf(stderr, "%s:%d - raft_get_num_voting_nodes: %d/%d\n",
+            __FILE__, __LINE__, raft_get_num_voting_nodes(sv->raft), raft_get_num_nodes(sv->raft));
 
     raft_periodic(sv->raft, PERIOD_MSEC);
 
@@ -1720,19 +1716,19 @@ static void __int_handler(int dummy)
     {
         if (raft_node_get_id(leader) == sv->node_id)
         {
-            printf("I'm the leader, I can't leave the cluster...\n");
+            fprintf(stderr, "%s:%d - I'm the leader, I can't leave the cluster...\n", __FILE__, __LINE__);
             goto done;
         }
 
         peer_connection_t *leader_conn = static_cast<peer_connection_t *>(raft_node_get_udata(leader));
         if (leader_conn)
         {
-            printf("Leaving cluster...\n");
+            fprintf(stderr, "%s:%d - Leaving cluster...\n", __FILE__, __LINE__);
             __send_demote(leader_conn);
             goto done;
         }
     }
-    printf("Try again no leader at the moment...\n");
+    fprintf(stderr, "%s:%d - Try again no leader at the moment...\n", __FILE__, __LINE__);
 done:
     return;
 }
@@ -1887,8 +1883,9 @@ int main(int argc, char **argv)
         e = __load_opts(sv, &opts);
         if (0 != e)
         {
-            printf("ERROR: No database available.\n"
-                   "Please start or join a cluster.\n");
+            fprintf(stderr, "%s:%d - ERROR: No database available.\n"
+                            "Please start or join a cluster.\n",
+                    __FILE__, __LINE__);
             abort();
         }
     }

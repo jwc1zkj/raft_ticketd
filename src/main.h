@@ -3,9 +3,6 @@
 
 #define NET_LIBRARY_TYPE 0
 
-#if NET_LIBRARY_TYPE
-#include <uv.h>
-#else
 #include <queue>
 #include <mutex>
 #include <vector>
@@ -13,7 +10,6 @@
 #include <boost/asio.hpp>
 namespace net = boost::asio;      // from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
-#endif
 
 #include <raft.h>
 #include <tpl.h>
@@ -118,76 +114,64 @@ typedef enum
 
 struct peer_connection_t
 {
-    /* peer's address */
-    struct sockaddr_in addr;
+    explicit peer_connection_t(net::io_context &loop_) : stream(loop_), loop(&loop_) {}
 
-    int http_port, raft_port;
+    /* peer's address */
+    net::ip::address addr;
+
+    uint16_t http_port = 0;
+    uint16_t raft_port = 0;
 
     /* gather TPL message */
-    tpl_gather_t *gt;
+    tpl_gather_t *gt = nullptr;
 
     /* tell if we need to connect or not */
-    conn_status_e connection_status;
+    conn_status_e connection_status = DISCONNECTED;
 
     /* peer's raft node_idx */
-    raft_node_t *node;
+    raft_node_t *node = nullptr;
 
     /* number of entries currently expected.
      * this counts down as we consume entries */
-    int n_expected_entries;
+    int n_expected_entries = 0;
 
     /* remember most recent append entries msg, we refer to this msg when we
      * finish reading the log entries.
      * used in tandem with n_expected_entries */
-    msg_t ae;
+    msg_t ae = {0};
 
-#if NET_LIBRARY_TYPE
-    uv_stream_t *stream;
-    uv_loop_t *loop;
-#else
     tcp::socket stream;
     std::queue<net::const_buffer> pending;
     std::vector<char> reading;
-    net::io_context *loop;
-#endif
+    net::io_context *loop = nullptr;
 
-    peer_connection_t *next;
+    peer_connection_t *next = nullptr;
 };
 
 struct server_t
 {
     /* the server's node ID */
-    int node_id;
+    int node_id = 0;
 
-    raft_server_t *raft;
+    raft_server_t *raft = nullptr;
 
     /* Set of tickets that have been issued
      * We store unsigned ints in here */
-    MDB_dbi tickets;
+    MDB_dbi tickets = 0;
 
     /* Persistent state for voted_for and term
      * We store string keys (eg. "term") with int values */
-    MDB_dbi state;
+    MDB_dbi state = 0;
 
     /* Entries that have been appended to our log
      * For each log entry we store two things next to each other:
      *  - TPL serialized raft_entry_t
      *  - raft_entry_data_t */
-    MDB_dbi entries;
+    MDB_dbi entries = 0;
 
     /* LMDB database environment */
-    MDB_env *db_env;
+    MDB_env *db_env = nullptr;
 
-#if NET_LIBRARY_TYPE
-    /* Raft isn't multi-threaded, therefore we use a global lock */
-    uv_mutex_t raft_lock;
-
-    /* When we receive an entry from the client we need to block until the
-     * entry has been committed. This condition is used to wake us up. */
-    uv_cond_t appendentries_received;
-
-    uv_loop_t peer_loop;
-#else
     /* Raft isn't multi-threaded, therefore we use a global lock */
     std::mutex raft_lock;
 
@@ -197,12 +181,11 @@ struct server_t
 
     net::io_context peer_loop{1};
     net::steady_timer periodic_timer{peer_loop};
-#endif
 
     /* Link list of peer connections */
-    peer_connection_t *conns;
+    peer_connection_t *conns = nullptr;
 
-    int load_flag; /* 加载标志 */
+    int load_flag = 0; /* 加载标志 */
 };
 
 unsigned int __generate_ticket();

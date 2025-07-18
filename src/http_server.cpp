@@ -321,7 +321,7 @@ private:
 
             char leader_url[LEADER_URL_LEN];
             snprintf(leader_url, LEADER_URL_LEN, "http://%s:%d/",
-                     inet_ntoa(leader_conn->addr.sin_addr),
+                     leader_conn->addr.to_string().c_str(),
                      leader_conn->http_port);
 
             string_response_.emplace(
