@@ -1136,6 +1136,7 @@ static void __on_connection_accepted_by_peer(peer_connection_t *conn)
 static peer_connection_t *__new_connection(server_t *sv)
 {
     peer_connection_t *conn = static_cast<peer_connection_t *>(calloc(1, sizeof(peer_connection_t)));
+
     conn->loop = &sv->peer_loop;
     conn->next = sv->conns;
     sv->conns = conn;
@@ -1201,6 +1202,7 @@ static void __connect_to_peer(peer_connection_t *conn)
 }
 #endif
 
+#if NET_LIBRARY_TYPE
 static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
 {
     conn->raft_port = port;
@@ -1209,6 +1211,24 @@ static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
     if (0 != e)
         uv_fatal(e);
 }
+#else
+static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
+{
+    boost::system::error_code ec;
+    auto addr = net::ip::make_address(host, ec);
+    if (ec)
+    {
+        fprintf(stderr, "%s:%d - err: [%d]%s\n",
+                __FILE__, __LINE__, ec.value(), ec.message().c_str());
+        exit(1);
+    }
+    tcp::endpoint ep{addr, static_cast<net::ip::port_type>(port)};
+    conn->addr.sin_family = AF_INET;
+    conn->addr.sin_port = htons(ep.port());
+    conn->addr.sin_addr.s_addr = htonl(ep.address().to_v4().to_ulong());
+    conn->raft_port = port;
+}
+#endif
 
 static void __connect_to_peer_at_host(peer_connection_t *conn, char *host,
                                       int port)
@@ -1681,10 +1701,10 @@ done:
 static void __do_periodic_timer(server_t *sv)
 {
     sv->periodic_timer.expires_after(std::chrono::milliseconds(PERIOD_MSEC));
-    sv->periodic_timer.async_wait([sv](const boost::system::error_code& ec){
+    sv->periodic_timer.async_wait([sv](const boost::system::error_code &ec)
+                                  {
         __periodic(nullptr);
-        __do_periodic_timer(sv);
-    });
+        __do_periodic_timer(sv); });
 }
 static void __start_raft_periodic_timer(server_t *sv)
 {
@@ -1767,10 +1787,30 @@ static void __do_peer_listen(tcp::acceptor *listen)
 
 static void __start_peer_socket(server_t *sv, const char *host, int port, tcp::acceptor *listen)
 {
-    tcp::endpoint ep{net::ip::make_address(host), static_cast<net::ip::port_type>(port)};
-    listen->open(ep.protocol());
     boost::system::error_code ec;
+    auto addr = net::ip::make_address(host, ec);
+    if (ec)
+    {
+        fprintf(stderr, "%s:%d - err: [%d]%s\n",
+                __FILE__, __LINE__, ec.value(), ec.message().c_str());
+        exit(1);
+    }
+    tcp::endpoint ep{addr, static_cast<net::ip::port_type>(port)};
+    listen->open(ep.protocol(), ec);
+    if (ec)
+    {
+        fprintf(stderr, "%s:%d - err: [%d]%s\n",
+                __FILE__, __LINE__, ec.value(), ec.message().c_str());
+        exit(1);
+    }
     listen->bind(ep, ec);
+    if (ec)
+    {
+        fprintf(stderr, "%s:%d - err: [%d]%s\n",
+                __FILE__, __LINE__, ec.value(), ec.message().c_str());
+        exit(1);
+    }
+    listen->listen(net::socket_base::max_listen_connections, ec);
     if (ec)
     {
         fprintf(stderr, "%s:%d - err: [%d]%s\n",
@@ -1790,7 +1830,7 @@ static void __save_opts(server_t *sv, options_t *opts)
 
 int main(int argc, char **argv)
 {
-    memset(sv, 0, sizeof(server_t));
+    // memset(sv, 0, sizeof(server_t));
 
     int e = parse_options(argc, argv, &opts);
     if (-1 == e)
@@ -1833,6 +1873,7 @@ int main(int argc, char **argv)
     // uv_multiplex_t m;
 #else
     tcp::acceptor peer_listen{sv->peer_loop};
+
 #endif
 
     /* get ID */

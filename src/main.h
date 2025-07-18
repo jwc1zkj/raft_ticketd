@@ -116,9 +116,7 @@ typedef enum
     CONNECTED,
 } conn_status_e;
 
-typedef struct peer_connection_s peer_connection_t;
-
-struct peer_connection_s
+struct peer_connection_t
 {
     /* peer's address */
     struct sockaddr_in addr;
@@ -156,7 +154,7 @@ struct peer_connection_s
     peer_connection_t *next;
 };
 
-typedef struct server_s
+struct server_t
 {
     /* the server's node ID */
     int node_id;
@@ -205,7 +203,7 @@ typedef struct server_s
     peer_connection_t *conns;
 
     int load_flag; /* 加载标志 */
-} server_t;
+};
 
 unsigned int __generate_ticket();
 
