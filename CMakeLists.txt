@@ -38,7 +38,6 @@ include(CTest)
 
 add_subdirectory("arraytools")
 add_subdirectory("container_of")
-add_subdirectory("uv_helpers")
 add_subdirectory("lmdb_helpers")
 add_subdirectory("raft")
 add_subdirectory("tpl")

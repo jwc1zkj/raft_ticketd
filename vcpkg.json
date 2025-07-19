@@ -4,7 +4,6 @@
     "fmt",
     "zlib",
     "lmdb",
-    "libuv",
     "boost-algorithm",
     {
       "name": "boost-asio",

@@ -15,7 +15,7 @@
 // #include "lmdb.h"
 #include "lmdb_helpers.h"
 // #include "raft.h"
-#include "uv_helpers.h"
+// #include "uv_helpers.h"
 // #include "uv_multiplex.h"
 // #include "tpl.h"
 #include "arraytools.h"
@@ -92,30 +92,6 @@ static int __append_cfg_change(server_t *sv,
                                int node_id);
 static void __drop_db(server_t *sv);
 
-#if NET_LIBRARY_TYPE
-/** Serialize a peer message using TPL
- * @param[out] bufs libuv buffer to insert serialized message into
- * @param[out] buf Buffer to write serialized message into */
-static size_t __peer_msg_serialize(tpl_node *tn, uv_buf_t *buf, char *data)
-{
-    size_t sz;
-    tpl_pack(tn, 0);
-    tpl_dump(tn, TPL_GETSIZE, &sz);
-    tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, data, RAFT_BUFLEN);
-    tpl_free(tn);
-    buf->len = sz;
-    buf->base = data;
-    return sz;
-}
-
-static void __peer_msg_send(uv_stream_t *s, tpl_node *tn, uv_buf_t *buf, char *data)
-{
-    __peer_msg_serialize(tn, buf, data);
-    int e = uv_try_write(s, buf, 1);
-    if (e < 0)
-        uv_fatal(e);
-}
-#else
 /** Serialize a peer message using TPL
  * @param[out] bufs libuv buffer to insert serialized message into
  * @param[out] buf Buffer to write serialized message into */
@@ -164,7 +140,6 @@ static void __peer_msg_send(peer_connection_t *conn, tpl_node *tn, net::const_bu
         __peer_do_send(conn);
     }
 }
-#endif
 
 /** Check if the ticket has already been issued
  * @return 0 if not unique; otherwise 1 */
@@ -236,21 +211,14 @@ static int __raft_send_requestvote(
     int e = __connect_if_needed(conn);
     if (-1 == e)
         return 0;
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_REQUESTVOTE,
-    msg.rv = *m;
-    __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#else
+
     net::const_buffer bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_REQUESTVOTE,
     msg.rv = *m;
     __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#endif
+
     return 0;
 }
 
@@ -261,11 +229,8 @@ static int __raft_send_appendentries(
     raft_node_t *node,
     msg_appendentries_t *m)
 {
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[3];
-#else
     net::const_buffer bufs[3];
-#endif
+
     peer_connection_t *conn = static_cast<peer_connection_t *>(raft_node_get_udata(node));
 
     int e = __connect_if_needed(conn);
@@ -307,13 +272,7 @@ static int __raft_send_appendentries(
         tpl_dump(tn, TPL_GETSIZE, &sz);
         e = tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, ptr, RAFT_BUFLEN);
         assert(0 == e);
-#if NET_LIBRARY_TYPE
-        bufs[1].len = sz;
-        bufs[1].base = ptr;
-        e = uv_try_write(conn->stream, bufs, 2);
-        if (e < 0)
-            uv_fatal(e);
-#else
+
         bufs[1] = net::const_buffer(ptr, sz);
         bool write_in_progress = !conn->pending.empty();
         conn->pending.push(bufs[0]);
@@ -322,7 +281,7 @@ static int __raft_send_appendentries(
         {
             __peer_do_send(conn);
         }
-#endif
+
         tpl_free(tn);
 
         fprintf(stderr, "%s:%d - send entry(id: %d, term: %d, type: %d, len: %d)\n", __FILE__, __LINE__,
@@ -330,19 +289,12 @@ static int __raft_send_appendentries(
     }
     else
     {
-#if NET_LIBRARY_TYPE
-        /* keep alive appendentries only */
-        e = uv_try_write(conn->stream, bufs, 1);
-        if (e < 0)
-            uv_fatal(e);
-#else
         bool write_in_progress = !conn->pending.empty();
         conn->pending.push(bufs[0]);
         if (!write_in_progress)
         {
             __peer_do_send(conn);
         }
-#endif
     }
 
     return 0;
@@ -528,12 +480,6 @@ static int __raft_persist_vote(
     return mdb_puts_int_commit(sv->db_env, sv->state, "voted_for", voted_for);
 }
 
-static void __peer_alloc_cb(uv_handle_t *handle, size_t size, uv_buf_t *buf)
-{
-    buf->len = size;
-    buf->base = (char *)malloc(size);
-}
-
 static int __append_cfg_change(server_t *sv,
                                raft_logtype_e change_type,
                                const char *host,
@@ -586,11 +532,9 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     peer_connection_t *conn = static_cast<peer_connection_t *>(data);
     msg_t m;
     int e;
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-#else
+
     net::const_buffer bufs[1];
-#endif
+
     char buf[RAFT_BUFLEN];
 
     /* special case: handle appendentries payload */
@@ -606,16 +550,10 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         // msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
         msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
         e = raft_recv_appendentries(sv->raft, conn->node, &conn->ae.ae, &msg.aer);
-#if NET_LIBRARY_TYPE
-        /* send response */
-        uv_buf_t bufs[1];
-        char buf[RAFT_BUFLEN];
-        __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#else
+
         net::const_buffer bufs[1];
         char buf[RAFT_BUFLEN];
         __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#endif
 
         // free(entry.data.buf);
 
@@ -754,11 +692,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         // msg_t msg = {.type = MSG_REQUESTVOTE_RESPONSE};
         msg_t msg = {MSG_REQUESTVOTE_RESPONSE};
         e = raft_recv_requestvote(sv->raft, conn->node, &m.rv, &msg.rvr);
-#if NET_LIBRARY_TYPE
-        __peer_msg_send(conn->stream, tpl_map("S(I$(II))", &msg), bufs, buf);
-#else
+
         __peer_msg_send(conn, tpl_map("S(I$(II))", &msg), bufs, buf);
-#endif
     }
     break;
     case MSG_REQUESTVOTE_RESPONSE:
@@ -777,20 +712,15 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
             // msg_t msg = {.type = MSG_APPENDENTRIES_RESPONSE};
             msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
             e = raft_recv_appendentries(sv->raft, conn->node, &m.ae, &msg.aer);
-#if NET_LIBRARY_TYPE
-            __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#else
+
             __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
-#endif
         }
         break;
     case MSG_APPENDENTRIES_RESPONSE:
         e = raft_recv_appendentries_response(sv->raft, conn->node, &m.aer);
-#if NET_LIBRARY_TYPE
-        uv_cond_signal(&sv->appendentries_received);
-#else
+
         sv->appendentries_received.notify_all();
-#endif
+
         break;
     default:
         fprintf(stderr, "%s:%d - unknown msg\n", __FILE__, __LINE__);
@@ -799,34 +729,6 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     return 0;
 }
 
-#if NET_LIBRARY_TYPE
-/** Read raft traffic using binary protocol */
-static void __peer_read_cb(uv_stream_t *tcp, ssize_t nread, const uv_buf_t *buf)
-{
-    peer_connection_t *conn = static_cast<peer_connection_t *>(tcp->data);
-
-    if (nread < 0)
-        switch (nread)
-        {
-        case UV__ECONNRESET:
-        case UV__EOF:
-            conn->connection_status = DISCONNECTED;
-            // __delete_connection(sv, conn);
-            return;
-        default:
-            uv_fatal(nread);
-        }
-
-    if (0 <= nread)
-    {
-        assert(conn);
-        uv_mutex_lock(&sv->raft_lock);
-        tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt,
-                   __deserialize_and_handle_msg, conn);
-        uv_mutex_unlock(&sv->raft_lock);
-    }
-}
-#else
 /** Read raft traffic using binary protocol */
 static void __peer_read_cb(peer_connection_t *conn, const net::const_buffer *buf)
 {
@@ -835,58 +737,30 @@ static void __peer_read_cb(peer_connection_t *conn, const net::const_buffer *buf
     tpl_gather(TPL_GATHER_MEM, buf->data(), buf->size(), &conn->gt,
                __deserialize_and_handle_msg, conn);
 }
-#endif
 
 static void __send_demote(peer_connection_t *conn)
 {
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_DEMOTE;
-    __peer_msg_send(conn->stream, tpl_map("S(I)", &msg), &bufs[0], buf);
-    printf("send demote\n");
-#else
+
     net::const_buffer bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_DEMOTE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
     fprintf(stderr, "%s:%d - send demote\n", __FILE__, __LINE__);
-#endif
 }
 
 static void __send_leave(peer_connection_t *conn)
 {
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_LEAVE;
-    __peer_msg_send(conn->stream, tpl_map("S(I)", &msg), &bufs[0], buf);
-    printf("send leave\n");
-#else
     net::const_buffer bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_LEAVE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
     fprintf(stderr, "%s:%d - send leave\n", __FILE__, __LINE__);
-#endif
 }
 
 static void __send_handshake(peer_connection_t *conn)
 {
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_HANDSHAKE;
-    msg.hs.raft_port = atoi(opts.raft_port);
-    msg.hs.http_port = atoi(opts.http_port);
-    msg.hs.node_id = sv->node_id;
-    __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), &bufs[0], buf);
-#else
     net::const_buffer bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg = {};
@@ -895,7 +769,6 @@ static void __send_handshake(peer_connection_t *conn)
     msg.hs.http_port = atoi(opts.http_port);
     msg.hs.node_id = sv->node_id;
     __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), &bufs[0], buf);
-#endif
 }
 
 static int __send_demote_response(peer_connection_t *conn)
@@ -905,15 +778,7 @@ static int __send_demote_response(peer_connection_t *conn)
         fprintf(stderr, "%s:%d - no connection??\n", __FILE__, __LINE__);
         return -1;
     }
-#if NET_LIBRARY_TYPE
-    if (!conn->stream)
-        return -1;
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_DEMOTE_RESPONSE;
-    __peer_msg_send(conn->stream, tpl_map("S(I)", &msg), &bufs[0], buf);
-#else
+
     if (!conn->stream.is_open())
         return -1;
     net::const_buffer bufs[1];
@@ -921,7 +786,7 @@ static int __send_demote_response(peer_connection_t *conn)
     msg_t msg = {};
     msg.type = MSG_DEMOTE_RESPONSE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
-#endif
+
     return 0;
 }
 
@@ -932,15 +797,7 @@ static int __send_leave_response(peer_connection_t *conn)
         fprintf(stderr, "%s:%d - no connection??\n", __FILE__, __LINE__);
         return -1;
     }
-#if NET_LIBRARY_TYPE
-    if (!conn->stream)
-        return -1;
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg = {};
-    msg.type = MSG_LEAVE_RESPONSE;
-    __peer_msg_send(conn->stream, tpl_map("S(I)", &msg), &bufs[0], buf);
-#else
+
     if (!conn->stream.is_open())
         return -1;
     net::const_buffer bufs[1];
@@ -948,7 +805,7 @@ static int __send_leave_response(peer_connection_t *conn)
     msg_t msg = {};
     msg.type = MSG_LEAVE_RESPONSE;
     __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
-#endif
+
     return 0;
 }
 
@@ -956,11 +813,8 @@ static int __send_handshake_response(peer_connection_t *conn,
                                      handshake_state_e success,
                                      raft_node_t *leader)
 {
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-#else
     net::const_buffer bufs[1];
-#endif
+
     char buf[RAFT_BUFLEN];
 
     msg_t msg = {};
@@ -982,50 +836,12 @@ static int __send_handshake_response(peer_connection_t *conn,
     }
 
     msg.hsr.http_port = atoi(opts.http_port);
-#if NET_LIBRARY_TYPE
-    __peer_msg_send(conn->stream, tpl_map("S(I$(IIIIs))", &msg), bufs, buf);
-#else
+
     __peer_msg_send(conn, tpl_map("S(I$(IIIIs))", &msg), bufs, buf);
-#endif
 
     return 0;
 }
 
-#if NET_LIBRARY_TYPE
-/** Raft peer has connected to us.
- * Add them to our list of nodes */
-static void __on_peer_connection(uv_stream_t *listener, const int status)
-{
-    int e;
-
-    if (0 != status)
-        uv_fatal(status);
-
-    uv_tcp_t *tcp = static_cast<uv_tcp_t *>(calloc(1, sizeof(uv_tcp_t)));
-    e = uv_tcp_init(listener->loop, tcp);
-    if (0 != e)
-        uv_fatal(e);
-
-    e = uv_accept(listener, (uv_stream_t *)tcp);
-    if (0 != e)
-        uv_fatal(e);
-
-    peer_connection_t *conn = __new_connection(sv);
-    conn->node = NULL;
-    conn->loop = listener->loop;
-    conn->stream = (uv_stream_t *)tcp;
-    tcp->data = conn;
-
-    int namelen = sizeof(conn->addr);
-    e = uv_tcp_getpeername(tcp, (struct sockaddr *)&conn->addr, &namelen);
-    if (0 != e)
-        uv_fatal(e);
-
-    e = uv_read_start((uv_stream_t *)tcp, __peer_alloc_cb, __peer_read_cb);
-    if (0 != e)
-        uv_fatal(e);
-}
-#else
 static void __do_peer_read(peer_connection_t *conn)
 {
     auto buf = net::dynamic_vector_buffer(conn->reading);
@@ -1066,49 +882,7 @@ static void __on_peer_connection(tcp::socket &&peer)
 
     __do_peer_read(conn);
 }
-#endif
 
-#if NET_LIBRARY_TYPE
-/** Our connection attempt to raft peer has succeeded */
-static void __on_connection_accepted_by_peer(uv_connect_t *req,
-                                             const int status)
-{
-    peer_connection_t *conn = static_cast<peer_connection_t *>(req->data);
-    int e;
-
-    switch (status)
-    {
-    case 0:
-        break;
-    case -ECONNREFUSED:
-        free(req);
-        free(conn->stream);
-        conn->stream = nullptr;
-        conn->connection_status = DISCONNECTED;
-        return;
-    default:
-        // uv_fatal(status);
-        free(req);
-        free(conn->stream);
-        conn->stream = nullptr;
-        conn->connection_status = DISCONNECTED;
-        return;
-    }
-
-    __send_handshake(conn);
-
-    int nlen = sizeof(conn->addr);
-    e = uv_tcp_getpeername((uv_tcp_t *)req->handle, (struct sockaddr *)&conn->addr, &nlen);
-    if (0 != e)
-        uv_fatal(e);
-
-    /* start reading from peer */
-    conn->connection_status = CONNECTED;
-    e = uv_read_start(conn->stream, __peer_alloc_cb, __peer_read_cb);
-    if (0 != e)
-        uv_fatal(e);
-}
-#else
 /** Our connection attempt to raft peer has succeeded */
 static void __on_connection_accepted_by_peer(peer_connection_t *conn)
 {
@@ -1129,7 +903,6 @@ static void __on_connection_accepted_by_peer(peer_connection_t *conn)
     conn->connection_status = CONNECTED;
     __do_peer_read(conn);
 }
-#endif
 
 static peer_connection_t *__new_connection(server_t *sv)
 {
@@ -1140,41 +913,6 @@ static peer_connection_t *__new_connection(server_t *sv)
     return conn;
 }
 
-#if NET_LIBRARY_TYPE
-/** Connect to raft peer */
-static void __connect_to_peer(peer_connection_t *conn)
-{
-    int e;
-
-    uv_tcp_t *tcp = static_cast<uv_tcp_t *>(calloc(1, sizeof(uv_tcp_t)));
-    tcp->data = conn;
-    e = uv_tcp_init(conn->loop, tcp);
-    if (0 != e)
-    {
-        // uv_fatal(e);
-        free(tcp);
-        return;
-    }
-
-    conn->stream = (uv_stream_t *)tcp;
-    conn->connection_status = CONNECTING;
-
-    uv_connect_t *c = static_cast<uv_connect_t *>(calloc(1, sizeof(uv_connect_t)));
-    c->data = conn;
-
-    e = uv_tcp_connect(c, (uv_tcp_t *)conn->stream,
-                       (struct sockaddr *)&conn->addr,
-                       __on_connection_accepted_by_peer);
-    if (0 != e)
-    {
-        // uv_fatal(e);
-        free(tcp);
-        free(c);
-        conn->stream = nullptr;
-        conn->connection_status = DISCONNECTED;
-    }
-}
-#else
 /** Connect to raft peer */
 static void __connect_to_peer(peer_connection_t *conn)
 {
@@ -1197,18 +935,7 @@ static void __connect_to_peer(peer_connection_t *conn)
                                    __on_connection_accepted_by_peer(conn);
                                });
 }
-#endif
 
-#if NET_LIBRARY_TYPE
-static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
-{
-    conn->raft_port = port;
-    printf("Connecting to %s:%d\n", host, port);
-    int e = uv_ip4_addr(host, port, &conn->addr);
-    if (0 != e)
-        uv_fatal(e);
-}
-#else
 static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
 {
     boost::system::error_code ec;
@@ -1223,7 +950,6 @@ static void __connection_set_peer(peer_connection_t *conn, char *host, int port)
     conn->addr = addr;
     conn->raft_port = port;
 }
-#endif
 
 static void __connect_to_peer_at_host(peer_connection_t *conn, char *host,
                                       int port)
@@ -1263,26 +989,17 @@ static int __raft_logentry_offer(
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
         mdb_fatal(e);
-#if NET_LIBRARY_TYPE
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    __peer_msg_serialize(tpl_map("S(III)", ety), bufs, buf);
-#else
+
     net::const_buffer bufs[1];
     char buf[RAFT_BUFLEN];
     __peer_msg_serialize(tpl_map("S(III)", ety), bufs, buf);
-#endif
 
     /* 1. put metadata */
     ety_idx <<= 1;
     // MDB_val key = {.mv_size = sizeof(ety_idx), .mv_data = (void *)&ety_idx};
     MDB_val key = {sizeof(ety_idx), (void *)&ety_idx};
     // MDB_val val = {.mv_size = bufs->len, .mv_data = bufs->base};
-#if NET_LIBRARY_TYPE
-    MDB_val val = {bufs->len, bufs->base};
-#else
     MDB_val val = {bufs->size(), (void *)bufs->data()};
-#endif
 
     e = mdb_put(txn, sv->entries, &key, &val, 0);
     switch (e)
@@ -1495,34 +1212,8 @@ raft_cbs_t raft_funcs = {
     __raft_log,
 };
 
-#if NET_LIBRARY_TYPE
 /** Raft callback for handling periodic logic */
-static void __periodic(uv_timer_t *handle)
-{
-    uv_mutex_lock(&sv->raft_lock);
-
-    printf("raft_get_num_voting_nodes: %d/%d\n", raft_get_num_voting_nodes(sv->raft), raft_get_num_nodes(sv->raft));
-
-    raft_periodic(sv->raft, PERIOD_MSEC);
-
-    if (opts.leave)
-    {
-        raft_node_t *leader = raft_get_current_leader_node(sv->raft);
-        if (leader)
-        {
-            peer_connection_t *leader_conn = static_cast<peer_connection_t *>(raft_node_get_udata(leader));
-            assert(raft_node_get_id(leader) != sv->node_id);
-            __send_leave(leader_conn);
-        }
-    }
-
-    // raft_apply_all(sv->raft);
-
-    uv_mutex_unlock(&sv->raft_lock);
-}
-#else
-/** Raft callback for handling periodic logic */
-static void __periodic(uv_timer_t *handle)
+static void __periodic(void *handle)
 {
     std::unique_lock locker(sv->raft_lock);
 
@@ -1542,7 +1233,6 @@ static void __periodic(uv_timer_t *handle)
         }
     }
 }
-#endif
 
 /** Load all log entries we have persisted to disk */
 static void __load_commit_log(server_t *sv)
@@ -1659,41 +1349,6 @@ static void __drop_db(server_t *sv)
     mdb_drop_dbs(sv->db_env, dbs, len(dbs));
 }
 
-#if NET_LIBRARY_TYPE
-static void __start_raft_periodic_timer(server_t *sv)
-{
-    uv_timer_t *periodic_req = static_cast<uv_timer_t *>(calloc(1, sizeof(uv_timer_t)));
-    periodic_req->data = sv;
-    uv_timer_init(&sv->peer_loop, periodic_req);
-    uv_timer_start(periodic_req, __periodic, 0, PERIOD_MSEC);
-    raft_set_election_timeout(sv->raft, 2000);
-}
-
-static void __int_handler(int dummy)
-{
-    uv_mutex_lock(&sv->raft_lock);
-    raft_node_t *leader = raft_get_current_leader_node(sv->raft);
-    if (leader)
-    {
-        if (raft_node_get_id(leader) == sv->node_id)
-        {
-            printf("I'm the leader, I can't leave the cluster...\n");
-            goto done;
-        }
-
-        peer_connection_t *leader_conn = static_cast<peer_connection_t *>(raft_node_get_udata(leader));
-        if (leader_conn)
-        {
-            printf("Leaving cluster...\n");
-            __send_demote(leader_conn);
-            goto done;
-        }
-    }
-    printf("Try again no leader at the moment...\n");
-done:
-    uv_mutex_unlock(&sv->raft_lock);
-}
-#else
 static void __do_periodic_timer(server_t *sv)
 {
     sv->periodic_timer.expires_after(std::chrono::milliseconds(PERIOD_MSEC));
@@ -1732,7 +1387,6 @@ static void __int_handler(int dummy)
 done:
     return;
 }
-#endif
 
 static void __new_db(server_t *sv)
 {
@@ -1742,21 +1396,6 @@ static void __new_db(server_t *sv)
     mdb_db_create(&sv->state, sv->db_env, "state");
 }
 
-#if NET_LIBRARY_TYPE
-static void __start_peer_socket(server_t *sv, const char *host, int port, uv_tcp_t *listen)
-{
-    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
-    int e = uv_loop_init(&sv->peer_loop);
-    if (0 != e)
-        uv_fatal(e);
-
-    uv_bind_listen_socket(listen, host, port, &sv->peer_loop);
-    e = uv_listen((uv_stream_t *)listen, MAX_PEER_CONNECTIONS,
-                  __on_peer_connection);
-    if (0 != e)
-        uv_fatal(e);
-}
-#else
 static void __accept_handler(const boost::system::error_code &ec,
                              tcp::socket peer)
 {
@@ -1815,7 +1454,6 @@ static void __start_peer_socket(server_t *sv, const char *host, int port, tcp::a
     }
     __do_peer_listen(listen);
 }
-#endif
 
 static void __save_opts(server_t *sv, options_t *opts)
 {
@@ -1860,17 +1498,9 @@ int main(int argc, char **argv)
 
     http_server http_srv;
 
-/* lock and condition to support HTTP client blocking */
-#if NET_LIBRARY_TYPE
-    uv_mutex_init(&sv->raft_lock);
-    uv_cond_init(&sv->appendentries_received);
+    /* lock and condition to support HTTP client blocking */
 
-    uv_tcp_t peer_listen;
-    // uv_multiplex_t m;
-#else
     tcp::acceptor peer_listen{sv->peer_loop};
-
-#endif
 
     /* get ID */
     if (opts.start || opts.join)
@@ -1974,9 +1604,5 @@ int main(int argc, char **argv)
 
     __start_raft_periodic_timer(sv);
 
-#if NET_LIBRARY_TYPE
-    uv_run(&sv->peer_loop, UV_RUN_DEFAULT);
-#else
     sv->peer_loop.run();
-#endif
 }

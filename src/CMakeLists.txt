@@ -16,7 +16,6 @@ target_link_libraries(${TGT}
     arraytools 
     container_of 
     lmdb_helpers
-    uv_helpers
     fmt::fmt-header-only
     Boost::beast
     Boost::asio
