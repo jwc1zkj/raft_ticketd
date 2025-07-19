@@ -142,6 +142,7 @@ struct peer_connection_t
     tcp::socket stream;
     std::queue<net::const_buffer> pending;
     std::vector<char> reading;
+    decltype(net::dynamic_buffer(reading)) read_buf{reading};
     net::io_context *loop = nullptr;
 
     peer_connection_t *next = nullptr;
@@ -183,12 +184,15 @@ struct server_t
 
     net::io_context peer_loop{1};
     net::steady_timer periodic_timer{peer_loop};
+    tcp::acceptor peer_listen{peer_loop};
 
     /* Link list of peer connections */
     peer_connection_t *conns = nullptr;
 
     boost::pool<> pool[64];
     int load_flag = 0; /* 加载标志 */
+
+    int stop_flag = 0;
 
 public:
     server_t() : pool{
@@ -262,5 +266,51 @@ public:
 };
 
 unsigned int __generate_ticket();
+
+
+#define UTIL_CAT_I(a, b) a##b
+#define UTIL_CAT(a, b) UTIL_CAT_I(a, b)
+
+template <typename F>
+class __dummy_defer_t
+{
+    F f_;
+
+public:
+    __dummy_defer_t() = default;
+    explicit __dummy_defer_t(F &&f)
+        : f_(std::move(f))
+    {
+    }
+    ~__dummy_defer_t()
+    {
+        f_();
+    }
+
+    __dummy_defer_t(const __dummy_defer_t &) = delete;
+    __dummy_defer_t(__dummy_defer_t &&) = delete;
+    __dummy_defer_t &operator=(const __dummy_defer_t &) = delete;
+    __dummy_defer_t &operator=(__dummy_defer_t &&) = delete;
+};
+
+#define UTIL_DEFER(...) \
+    __dummy_defer_t UTIL_CAT(__dummy, __LINE__)((__VA_ARGS__))
+
+struct __make_defer_t
+{
+    __make_defer_t() = default;
+    __make_defer_t(const __make_defer_t &) = delete;
+    __make_defer_t(__make_defer_t &&) = delete;
+    __make_defer_t &operator=(const __make_defer_t &) = delete;
+    __make_defer_t &operator=(__make_defer_t &&) = delete;
+
+    template <typename F>
+    auto operator<<(F &&f) -> __dummy_defer_t<F>
+    {
+        return __dummy_defer_t(std::forward<F>(f));
+    }
+};
+#define MAKE_DEFER \
+    auto UTIL_CAT(__dummy, __LINE__) = __make_defer_t() <<
 
 #endif // SRC_MAIN_H_

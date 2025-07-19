@@ -63,6 +63,7 @@ namespace
 
 options_t opts;
 server_t server;
+http_server http_srv;
 server_t *sv = &server;
 
 void *__server_malloc(size_t size)
@@ -100,6 +101,7 @@ void *__server_realloc(void *p, size_t size)
                 {
                     return p;
                 }
+                sv->pool[i].free(p);
                 break;
             }
         }
@@ -163,28 +165,40 @@ static size_t __peer_msg_serialize(tpl_node *tn, net::const_buffer *buf)
     *buf = net::const_buffer(data, sz);
     return sz;
 }
+static void __peer_do_close(peer_connection_t *conn)
+{
+    conn->stream.close();
+    while (!conn->pending.empty())
+    {
+        __server_free((void *)conn->pending.front().data());
+        conn->pending.pop();
+    }
+    conn->read_buf.consume(conn->read_buf.size());
+    conn->connection_status = DISCONNECTED;
+}
+
 static void __peer_do_send(peer_connection_t *conn)
 {
+    if (sv->stop_flag)
+        return;
     net::async_write(conn->stream, conn->pending.front(),
-                     [conn](const boost::system::error_code &error, std::size_t bytes_transferred)
+                     [conn](const boost::system::error_code &ec, std::size_t bytes_transferred)
                      {
-                         if (!error)
-                         {
-                             fprintf(stderr, "%s:%d - peer send %zu bytes\n",
-                                     __FILE__, __LINE__, bytes_transferred);
-                             __server_free((void*)conn->pending.front().data());
-                             conn->pending.pop();
-                             if (!conn->pending.empty())
-                             {
-                                 __peer_do_send(conn);
-                             }
-                         }
-                         else
+                         if (ec)
                          {
                              fprintf(stderr, "%s:%d - peer send failed.[%d]%s\n",
-                                     __FILE__, __LINE__, error.value(), error.message().c_str());
-                             conn->stream.close();
-                             conn->connection_status = DISCONNECTED;
+                                     __FILE__, __LINE__, ec.value(), ec.message().c_str());
+                             __peer_do_close(conn);
+                             return;
+                         }
+
+                         fprintf(stderr, "%s:%d - peer send %zu bytes\n",
+                                 __FILE__, __LINE__, bytes_transferred);
+                         __server_free((void *)conn->pending.front().data());
+                         conn->pending.pop();
+                         if (!conn->pending.empty())
+                         {
+                             __peer_do_send(conn);
                          }
                      });
 }
@@ -309,10 +323,6 @@ static int __raft_send_appendentries(
     /* appendentries with payload */
     if (0 < m->n_entries)
     {
-        // tpl_bin tb = {
-        //     .addr = m->entries[0].data.buf,
-        //     .sz = m->entries[0].data.len,
-        // };
         tpl_bin tb = {
             m->entries[0].data.buf,
             m->entries[0].data.len,
@@ -364,6 +374,20 @@ static int __raft_send_snapshot(
     raft_node_t *node)
 {
     return 0;
+}
+
+static void __clear_connection(server_t *sv)
+{
+    peer_connection_t *next = nullptr;
+    while (sv->conns)
+    {
+        next = sv->conns->next;
+        __peer_do_close(sv->conns);
+        if (sv->conns->node)
+            raft_node_set_udata(sv->conns->node, NULL);
+        delete sv->conns;
+        sv->conns = next;
+    }
 }
 
 static void __delete_connection(server_t *sv, peer_connection_t *conn)
@@ -576,7 +600,7 @@ static void __deserialize_appendentries_payload(msg_entry_t *out,
                            &out->term,
                            &out->type,
                            &tb);
-    free(fmt);
+    tpl_hook.free(fmt);
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
     tpl_free(tn);
@@ -588,6 +612,12 @@ static void __deserialize_appendentries_payload(msg_entry_t *out,
 static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 {
     peer_connection_t *conn = static_cast<peer_connection_t *>(data);
+
+    MAKE_DEFER[conn, sz]
+    {
+        conn->read_buf.consume(sz);
+    };
+
     msg_t m;
     int e;
 
@@ -621,6 +651,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     /* deserialize message */
     char *fmt = tpl_peek(TPL_MEM, img, sz);
     tpl_node *tn = tpl_map(fmt, &m);
+    tpl_hook.free(fmt);
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
     tpl_free(tn);
@@ -742,7 +773,9 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         fprintf(stderr, "%s:%d - recv leave response\n", __FILE__, __LINE__);
         __drop_db(sv);
         fprintf(stderr, "%s:%d - Shutdown complete. Quitting...\n", __FILE__, __LINE__);
-        exit(0);
+        sv->stop_flag = 1;
+        sv->peer_listen.close();
+        sv->periodic_timer.cancel();
         break;
     case MSG_REQUESTVOTE:
     {
@@ -894,17 +927,20 @@ static int __send_handshake_response(peer_connection_t *conn,
 
 static void __do_peer_read(peer_connection_t *conn)
 {
-    auto buf = net::dynamic_vector_buffer(conn->reading);
-    conn->stream.async_read_some(buf.prepare(2048),
+    if (sv->stop_flag)
+        return;
+    conn->stream.async_read_some(conn->read_buf.prepare(2048),
                                  [conn](const boost::system::error_code &ec, std::size_t bytes_transferred)
                                  {
                                      if (ec)
                                      {
                                          fprintf(stderr, "%s:%d - err: [%d]%s\n",
                                                  __FILE__, __LINE__, ec.value(), ec.message().c_str());
-                                         exit(1);
+                                         __peer_do_close(conn);
+                                         return;
                                      }
-                                     net::const_buffer buf = net::const_buffer(conn->reading.data(), bytes_transferred);
+                                     conn->read_buf.commit(bytes_transferred);
+                                     net::const_buffer buf = conn->read_buf.data();
                                      __peer_read_cb(conn, &buf);
                                      __do_peer_read(conn);
                                  });
@@ -936,21 +972,21 @@ static void __on_peer_connection(tcp::socket &&peer)
 /** Our connection attempt to raft peer has succeeded */
 static void __on_connection_accepted_by_peer(peer_connection_t *conn)
 {
-    __send_handshake(conn);
-
     boost::system::error_code ec;
     auto remote_ep = conn->stream.remote_endpoint(ec);
     if (ec)
     {
         fprintf(stderr, "%s:%d - err: [%d]%s\n",
                 __FILE__, __LINE__, ec.value(), ec.message().c_str());
-        exit(1);
+        conn->connection_status = DISCONNECTED;
+        conn->stream.close();
+        return;
     }
 
+    conn->connection_status = CONNECTED;
     conn->addr = remote_ep.address();
 
-    /* start reading from peer */
-    conn->connection_status = CONNECTED;
+    __send_handshake(conn);
     __do_peer_read(conn);
 }
 
@@ -966,7 +1002,8 @@ static peer_connection_t *__new_connection(server_t *sv)
 /** Connect to raft peer */
 static void __connect_to_peer(peer_connection_t *conn)
 {
-    int e;
+    if (sv->stop_flag)
+        return;
 
     conn->connection_status = CONNECTING;
 
@@ -978,7 +1015,8 @@ static void __connect_to_peer(peer_connection_t *conn)
                                    {
                                        fprintf(stderr, "%s:%d - err: [%d]%s\n",
                                                __FILE__, __LINE__, ec.value(), ec.message().c_str());
-                                       exit(1);
+                                       __peer_do_close(conn);
+                                       return;
                                    }
                                    __on_connection_accepted_by_peer(conn);
                                });
@@ -1150,7 +1188,7 @@ static int __raft_log_clear(
 {
     if (entry && entry->data.buf)
     {
-        free(entry->data.buf);
+        __server_free(entry->data.buf);
         entry->data.buf = nullptr;
         entry->data.len = 0;
     }
@@ -1398,6 +1436,8 @@ static void __drop_db(server_t *sv)
 
 static void __do_periodic_timer(server_t *sv)
 {
+    if (sv->stop_flag)
+        return;
     sv->periodic_timer.expires_after(std::chrono::milliseconds(PERIOD_MSEC));
     sv->periodic_timer.async_wait([sv](const boost::system::error_code &ec)
                                   {
@@ -1454,12 +1494,13 @@ static void __accept_handler(const boost::system::error_code &ec,
     {
         fprintf(stderr, "%s:%d - err: [%d]%s\n",
                 __FILE__, __LINE__, ec.value(), ec.message().c_str());
-        exit(1);
     }
 }
 
 static void __do_peer_listen(tcp::acceptor *listen)
 {
+    if (sv->stop_flag)
+        return;
     listen->async_accept([listen](const boost::system::error_code &ec,
                                   tcp::socket peer)
                          {
@@ -1548,12 +1589,6 @@ int main(int argc, char **argv)
         exit(0);
     }
 
-    http_server http_srv;
-
-    /* lock and condition to support HTTP client blocking */
-
-    tcp::acceptor peer_listen{sv->peer_loop};
-
     /* get ID */
     if (opts.start || opts.join)
     {
@@ -1585,7 +1620,7 @@ int main(int argc, char **argv)
 
         // __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
         http_srv.start(sv, opts.host, opts.http_port, 4, false);
-        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
+        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &sv->peer_listen);
 
         if (opts.start)
         {
@@ -1634,7 +1669,7 @@ int main(int argc, char **argv)
     {
         // __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
         http_srv.start(sv, opts.host, opts.http_port, 4, false);
-        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
+        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &sv->peer_listen);
         __load_commit_log(sv);
         __load_persistent_state(sv);
 
@@ -1657,4 +1692,6 @@ int main(int argc, char **argv)
     __start_raft_periodic_timer(sv);
 
     sv->peer_loop.run();
+    __clear_connection(sv);
+    http_srv.stop();
 }

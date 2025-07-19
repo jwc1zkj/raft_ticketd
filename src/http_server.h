@@ -15,6 +15,7 @@ public:
     ~http_server();
 
     void start(server_t* sv, const char *addr, const char *service, int num_workers, bool spin = false);
+    void stop();
 };
 
 #endif // SRC_HTTP_SERVER_H_

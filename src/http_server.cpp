@@ -102,8 +102,15 @@ public:
 
     void start()
     {
+        stoping_ = false;
         accept();
         check_deadline();
+    }
+
+    void stop()
+    {
+        stoping_ = true;
+        request_deadline_.cancel();
     }
 
 private:
@@ -112,6 +119,7 @@ private:
     using request_body_t = http::string_body;
 
     server_t *sv_;
+    bool stoping_{false};
 
     // The acceptor used to listen for incoming connections.
     tcp::acceptor &acceptor_;
@@ -149,6 +157,9 @@ private:
 
     void accept()
     {
+        if (stoping_)
+            return;
+
         // Clean up any previous connection.
         beast::error_code ec;
         socket_.close(ec);
@@ -360,11 +371,8 @@ private:
         entry.id = rand();
         entry.data.buf = (void *)&ticket;
         entry.data.len = sizeof(ticket);
-#if NET_LIBRARY_TYPE
-        uv_mutex_lock(&sv_->raft_lock);
-#else
+
         std::unique_lock locker(sv_->raft_lock);
-#endif
 
         msg_entry_response_t r;
         e = raft_recv_entry(sv_->raft, &entry, &r);
@@ -378,11 +386,9 @@ private:
             if (3 < tries)
             {
                 printf("ERROR: failed to commit entry\n");
-#if NET_LIBRARY_TYPE
-                uv_mutex_unlock(&sv_->raft_lock);
-#else
+
                 locker.unlock();
-#endif
+
                 return send_bad_response(http::status::bad_request /* 400 */, "TRY AGAIN");
             }
 
@@ -391,27 +397,15 @@ private:
             switch (e)
             {
             case 0:
-/* not committed yet */
-#if NET_LIBRARY_TYPE
-                uv_cond_wait(&sv_->appendentries_received, &sv_->raft_lock);
-#else
+                /* not committed yet */
                 sv_->appendentries_received.wait(locker);
-#endif
                 break;
             case 1:
                 done = 1;
-#if NET_LIBRARY_TYPE
-                uv_mutex_unlock(&sv_->raft_lock);
-#else
                 locker.unlock();
-#endif
                 break;
             case -1:
-#if NET_LIBRARY_TYPE
-                uv_mutex_unlock(&sv_->raft_lock);
-#else
                 locker.unlock();
-#endif
                 return send_bad_response(http::status::bad_request /* 400 */, "TRY AGAIN");
             }
         } while (!done);
@@ -449,6 +443,9 @@ private:
 
     void check_deadline()
     {
+        if (stoping_)
+            return;
+
         // The deadline may have moved, so check it has really passed.
         if (request_deadline_.expiry() <= std::chrono::steady_clock::now())
         {
@@ -479,10 +476,12 @@ class http_server_impl
     std::string doc_root_;
     int num_workers_;
     bool spin_;
+    bool stoping_;
 
 public:
     http_server_impl(server_t *sv, const char *addr, const char *service, int num_workers, bool spin = false)
-        : sv_{sv}, address_(net::ip::make_address(addr)), port_(static_cast<unsigned short>(std::atoi(service))), acceptor_{ioc_, {address_, port_}}, num_workers_{num_workers}, spin_{spin}
+        : sv_{sv}, address_(net::ip::make_address(addr)), port_(static_cast<unsigned short>(std::atoi(service))),
+          acceptor_{ioc_, {address_, port_}}, num_workers_{num_workers}, spin_{spin}, stoping_{false}
     {
     }
     ~http_server_impl()
@@ -498,10 +497,20 @@ public:
         }
 
         if (spin_)
-            for (;;)
+            for (; !stoping_;)
                 ioc_.poll();
         else
             ioc_.run();
+    }
+    void stop()
+    {
+        stoping_ = true;
+        acceptor_.close();
+
+        for (auto &each : workers_)
+        {
+            each.stop();
+        }
     }
 };
 
@@ -518,6 +527,12 @@ void http_server::start(server_t *sv, const char *addr, const char *service, int
     m_sp = std::make_unique<http_server_impl>(sv, addr, service, num_workers, spin);
     m_thd = std::move(std::thread([&]
                                   { m_sp->run(); }));
+}
+
+void http_server::stop()
+{
+    m_sp->stop();
+    m_thd.join();
 }
 
 #if 0
