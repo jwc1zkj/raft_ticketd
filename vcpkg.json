@@ -11,6 +11,7 @@
     },
     "boost-json",
     "boost-beast",
-    "boost-uuid"
+    "boost-uuid",
+    "boost-pool"
   ]
 }

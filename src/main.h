@@ -8,6 +8,7 @@
 #include <vector>
 #include <condition_variable>
 #include <boost/asio.hpp>
+#include <boost/pool/pool.hpp>
 namespace net = boost::asio;      // from <boost/asio.hpp>
 using tcp = boost::asio::ip::tcp; // from <boost/asio/ip/tcp.hpp>
 
@@ -114,8 +115,6 @@ typedef enum
 
 struct peer_connection_t
 {
-    explicit peer_connection_t(net::io_context &loop_) : stream(loop_), loop(&loop_) {}
-
     /* peer's address */
     net::ip::address addr;
 
@@ -146,6 +145,9 @@ struct peer_connection_t
     net::io_context *loop = nullptr;
 
     peer_connection_t *next = nullptr;
+
+public:
+    explicit peer_connection_t(net::io_context &loop_) : stream(loop_), loop(&loop_) {}
 };
 
 struct server_t
@@ -185,7 +187,78 @@ struct server_t
     /* Link list of peer connections */
     peer_connection_t *conns = nullptr;
 
+    boost::pool<> pool[64];
     int load_flag = 0; /* 加载标志 */
+
+public:
+    server_t() : pool{
+                     boost::pool<>(64 * 1),
+                     boost::pool<>(64 * 2),
+                     boost::pool<>(64 * 3),
+                     boost::pool<>(64 * 4),
+                     boost::pool<>(64 * 5),
+                     boost::pool<>(64 * 6),
+                     boost::pool<>(64 * 7),
+                     boost::pool<>(64 * 8),
+                     boost::pool<>(64 * 9),
+                     boost::pool<>(64 * 10),
+                     boost::pool<>(64 * 11),
+                     boost::pool<>(64 * 12),
+                     boost::pool<>(64 * 13),
+                     boost::pool<>(64 * 14),
+                     boost::pool<>(64 * 15),
+                     boost::pool<>(64 * 16),
+                     boost::pool<>(64 * 17),
+                     boost::pool<>(64 * 18),
+                     boost::pool<>(64 * 19),
+                     boost::pool<>(64 * 20),
+                     boost::pool<>(64 * 21),
+                     boost::pool<>(64 * 22),
+                     boost::pool<>(64 * 23),
+                     boost::pool<>(64 * 24),
+                     boost::pool<>(64 * 25),
+                     boost::pool<>(64 * 26),
+                     boost::pool<>(64 * 27),
+                     boost::pool<>(64 * 28),
+                     boost::pool<>(64 * 29),
+                     boost::pool<>(64 * 30),
+                     boost::pool<>(64 * 31),
+                     boost::pool<>(64 * 32),
+                     boost::pool<>(64 * 33),
+                     boost::pool<>(64 * 34),
+                     boost::pool<>(64 * 35),
+                     boost::pool<>(64 * 36),
+                     boost::pool<>(64 * 37),
+                     boost::pool<>(64 * 38),
+                     boost::pool<>(64 * 39),
+                     boost::pool<>(64 * 40),
+                     boost::pool<>(64 * 41),
+                     boost::pool<>(64 * 42),
+                     boost::pool<>(64 * 43),
+                     boost::pool<>(64 * 44),
+                     boost::pool<>(64 * 45),
+                     boost::pool<>(64 * 46),
+                     boost::pool<>(64 * 47),
+                     boost::pool<>(64 * 48),
+                     boost::pool<>(64 * 49),
+                     boost::pool<>(64 * 50),
+                     boost::pool<>(64 * 51),
+                     boost::pool<>(64 * 52),
+                     boost::pool<>(64 * 53),
+                     boost::pool<>(64 * 54),
+                     boost::pool<>(64 * 55),
+                     boost::pool<>(64 * 56),
+                     boost::pool<>(64 * 57),
+                     boost::pool<>(64 * 58),
+                     boost::pool<>(64 * 59),
+                     boost::pool<>(64 * 60),
+                     boost::pool<>(64 * 61),
+                     boost::pool<>(64 * 62),
+                     boost::pool<>(64 * 63),
+                     boost::pool<>(64 * 64),
+                 }
+    {
+    }
 };
 
 unsigned int __generate_ticket();

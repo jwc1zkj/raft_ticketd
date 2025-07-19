@@ -9,15 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-// #include "h2o.h"
-// #include "h2o/http1.h"
-// #include "h2o_helpers.h"
-// #include "lmdb.h"
 #include "lmdb_helpers.h"
-// #include "raft.h"
-// #include "uv_helpers.h"
-// #include "uv_multiplex.h"
-// #include "tpl.h"
 #include "arraytools.h"
 #include "main.h"
 
@@ -73,6 +65,71 @@ options_t opts;
 server_t server;
 server_t *sv = &server;
 
+void *__server_malloc(size_t size)
+{
+    auto i = size / 64;
+    if (i < 64)
+    {
+        return sv->pool[i].malloc();
+    }
+    return malloc(size);
+}
+
+void *__server_calloc(size_t num, size_t size)
+{
+    auto total = num * size;
+    auto i = total / 64;
+    if (i < 64)
+    {
+        auto p = sv->pool[i].malloc();
+        memset(p, 0, sv->pool[i].get_requested_size());
+        return p;
+    }
+    return calloc(num, size);
+}
+
+void *__server_realloc(void *p, size_t size)
+{
+    if (p)
+    {
+        for (size_t i = 0; i < 64; i++)
+        {
+            if (sv->pool[i].is_from(p))
+            {
+                if (size <= sv->pool[i].get_requested_size())
+                {
+                    return p;
+                }
+                break;
+            }
+        }
+    }
+    return __server_malloc(size);
+}
+
+void __server_free(void *p)
+{
+
+    for (size_t i = 0; i < 64; i++)
+    {
+        if (sv->pool[i].is_from(p))
+        {
+            sv->pool[i].free(p);
+            return;
+        }
+    }
+    free(p);
+}
+
+void *operator new(std::size_t count, const std::nothrow_t &tag) noexcept
+{
+    return __server_malloc(count);
+}
+void operator delete(void *ptr, std::size_t size) noexcept
+{
+    __server_free(ptr);
+}
+
 static peer_connection_t *__new_connection(server_t *sv);
 static void __connect_to_peer(peer_connection_t *conn);
 static void __connection_set_peer(peer_connection_t *conn, char *host, int port);
@@ -95,12 +152,13 @@ static void __drop_db(server_t *sv);
 /** Serialize a peer message using TPL
  * @param[out] bufs libuv buffer to insert serialized message into
  * @param[out] buf Buffer to write serialized message into */
-static size_t __peer_msg_serialize(tpl_node *tn, net::const_buffer *buf, char *data)
+static size_t __peer_msg_serialize(tpl_node *tn, net::const_buffer *buf)
 {
     size_t sz;
     tpl_pack(tn, 0);
     tpl_dump(tn, TPL_GETSIZE, &sz);
-    tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, data, RAFT_BUFLEN);
+    auto data = __server_malloc(sz);
+    tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, data, sz);
     tpl_free(tn);
     *buf = net::const_buffer(data, sz);
     return sz;
@@ -114,6 +172,7 @@ static void __peer_do_send(peer_connection_t *conn)
                          {
                              fprintf(stderr, "%s:%d - peer send %zu bytes\n",
                                      __FILE__, __LINE__, bytes_transferred);
+                             __server_free((void*)conn->pending.front().data());
                              conn->pending.pop();
                              if (!conn->pending.empty())
                              {
@@ -130,9 +189,9 @@ static void __peer_do_send(peer_connection_t *conn)
                      });
 }
 
-static void __peer_msg_send(peer_connection_t *conn, tpl_node *tn, net::const_buffer *buf, char *data)
+static void __peer_msg_send(peer_connection_t *conn, tpl_node *tn, net::const_buffer *buf)
 {
-    __peer_msg_serialize(tn, buf, data);
+    __peer_msg_serialize(tn, buf);
     bool write_in_progress = !conn->pending.empty();
     conn->pending.push(*buf);
     if (!write_in_progress)
@@ -213,11 +272,10 @@ static int __raft_send_requestvote(
         return 0;
 
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_REQUESTVOTE,
     msg.rv = *m;
-    __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
+    __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs);
 
     return 0;
 }
@@ -237,7 +295,6 @@ static int __raft_send_appendentries(
     if (-1 == e)
         return 0;
 
-    char buf[RAFT_BUFLEN], *ptr = buf;
     msg_t msg = {};
     msg.type = MSG_APPENDENTRIES;
     msg.ae.term = m->term;
@@ -247,7 +304,7 @@ static int __raft_send_appendentries(
     msg.ae.n_entries = 0;
     if (0 < m->n_entries)
         msg.ae.n_entries = 1;
-    ptr += __peer_msg_serialize(tpl_map("S(I$(IIIII))", &msg), bufs, ptr);
+    __peer_msg_serialize(tpl_map("S(I$(IIIII))", &msg), bufs);
 
     /* appendentries with payload */
     if (0 < m->n_entries)
@@ -270,7 +327,8 @@ static int __raft_send_appendentries(
         size_t sz;
         tpl_pack(tn, 0);
         tpl_dump(tn, TPL_GETSIZE, &sz);
-        e = tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, ptr, RAFT_BUFLEN);
+        auto ptr = __server_malloc(sz);
+        e = tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, ptr, sz);
         assert(0 == e);
 
         bufs[1] = net::const_buffer(ptr, sz);
@@ -326,7 +384,7 @@ static void __delete_connection(server_t *sv, peer_connection_t *conn)
         raft_node_set_udata(conn->node, NULL);
 
     // TODO: make sure all resources are freed
-    free(conn);
+    delete conn;
 }
 
 static peer_connection_t *__find_connection(server_t *sv, const char *host, int raft_port)
@@ -552,8 +610,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         e = raft_recv_appendentries(sv->raft, conn->node, &conn->ae.ae, &msg.aer);
 
         net::const_buffer bufs[1];
-        char buf[RAFT_BUFLEN];
-        __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
+        __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs);
 
         // free(entry.data.buf);
 
@@ -693,7 +750,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         msg_t msg = {MSG_REQUESTVOTE_RESPONSE};
         e = raft_recv_requestvote(sv->raft, conn->node, &m.rv, &msg.rvr);
 
-        __peer_msg_send(conn, tpl_map("S(I$(II))", &msg), bufs, buf);
+        __peer_msg_send(conn, tpl_map("S(I$(II))", &msg), bufs);
     }
     break;
     case MSG_REQUESTVOTE_RESPONSE:
@@ -713,7 +770,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
             msg_t msg = {MSG_APPENDENTRIES_RESPONSE};
             e = raft_recv_appendentries(sv->raft, conn->node, &m.ae, &msg.aer);
 
-            __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs, buf);
+            __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), bufs);
         }
         break;
     case MSG_APPENDENTRIES_RESPONSE:
@@ -742,33 +799,30 @@ static void __send_demote(peer_connection_t *conn)
 {
 
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_DEMOTE;
-    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
+    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0]);
     fprintf(stderr, "%s:%d - send demote\n", __FILE__, __LINE__);
 }
 
 static void __send_leave(peer_connection_t *conn)
 {
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_LEAVE;
-    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
+    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0]);
     fprintf(stderr, "%s:%d - send leave\n", __FILE__, __LINE__);
 }
 
 static void __send_handshake(peer_connection_t *conn)
 {
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_HANDSHAKE;
     msg.hs.raft_port = atoi(opts.raft_port);
     msg.hs.http_port = atoi(opts.http_port);
     msg.hs.node_id = sv->node_id;
-    __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), &bufs[0], buf);
+    __peer_msg_send(conn, tpl_map("S(I$(IIII))", &msg), &bufs[0]);
 }
 
 static int __send_demote_response(peer_connection_t *conn)
@@ -782,10 +836,9 @@ static int __send_demote_response(peer_connection_t *conn)
     if (!conn->stream.is_open())
         return -1;
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_DEMOTE_RESPONSE;
-    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
+    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0]);
 
     return 0;
 }
@@ -801,10 +854,9 @@ static int __send_leave_response(peer_connection_t *conn)
     if (!conn->stream.is_open())
         return -1;
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
     msg_t msg = {};
     msg.type = MSG_LEAVE_RESPONSE;
-    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0], buf);
+    __peer_msg_send(conn, tpl_map("S(I)", &msg), &bufs[0]);
 
     return 0;
 }
@@ -814,8 +866,6 @@ static int __send_handshake_response(peer_connection_t *conn,
                                      raft_node_t *leader)
 {
     net::const_buffer bufs[1];
-
-    char buf[RAFT_BUFLEN];
 
     msg_t msg = {};
     msg.type = MSG_HANDSHAKE_RESPONSE;
@@ -837,7 +887,7 @@ static int __send_handshake_response(peer_connection_t *conn,
 
     msg.hsr.http_port = atoi(opts.http_port);
 
-    __peer_msg_send(conn, tpl_map("S(I$(IIIIs))", &msg), bufs, buf);
+    __peer_msg_send(conn, tpl_map("S(I$(IIIIs))", &msg), bufs);
 
     return 0;
 }
@@ -906,7 +956,7 @@ static void __on_connection_accepted_by_peer(peer_connection_t *conn)
 
 static peer_connection_t *__new_connection(server_t *sv)
 {
-    peer_connection_t *conn = new peer_connection_t(sv->peer_loop);
+    peer_connection_t *conn = new (std::nothrow) peer_connection_t(sv->peer_loop);
 
     conn->next = sv->conns;
     sv->conns = conn;
@@ -920,9 +970,7 @@ static void __connect_to_peer(peer_connection_t *conn)
 
     conn->connection_status = CONNECTING;
 
-    tcp::endpoint ep(
-        conn->addr,
-        conn->raft_port);
+    tcp::endpoint ep(conn->addr, conn->raft_port);
     conn->stream.async_connect(ep,
                                [conn](const boost::system::error_code &ec)
                                {
@@ -991,8 +1039,7 @@ static int __raft_logentry_offer(
         mdb_fatal(e);
 
     net::const_buffer bufs[1];
-    char buf[RAFT_BUFLEN];
-    __peer_msg_serialize(tpl_map("S(III)", ety), bufs, buf);
+    __peer_msg_serialize(tpl_map("S(III)", ety), bufs);
 
     /* 1. put metadata */
     ety_idx <<= 1;
@@ -1482,6 +1529,11 @@ int main(int argc, char **argv)
 
     // signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, __int_handler);
+
+    raft_set_heap_functions(__server_malloc, __server_calloc, __server_realloc, __server_free);
+    tpl_hook.malloc = __server_malloc;
+    tpl_hook.realloc = __server_realloc;
+    tpl_hook.free = __server_free;
 
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);

@@ -89,6 +89,8 @@ typedef struct tpl_hook_t {
     size_t gather_max;
 } tpl_hook_t;
 
+extern struct tpl_hook_t tpl_hook;
+
 typedef struct tpl_node {
     int type;
     void *addr;

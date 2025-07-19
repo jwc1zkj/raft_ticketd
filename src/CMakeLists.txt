@@ -19,4 +19,5 @@ target_link_libraries(${TGT}
     fmt::fmt-header-only
     Boost::beast
     Boost::asio
+    Boost::pool
 )
